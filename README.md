@@ -2,7 +2,7 @@
 
 RelXen is a clean-room ASO-based Binance Futures trading dashboard. It is a local single-user app with a Rust backend, SQLite persistence, OS secure-storage-backed live credential metadata, live shadow/preflight foundations, a constrained Binance USDⓈ-M Futures executor, and a lightweight React dashboard served statically by the backend.
 
-Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. MAINNET execution is disabled by default and MAINNET auto-execution is not implemented.
+Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23 and the current recommendation is CONDITIONAL GO for one bounded manual MAINNET canary session later. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
 
 ## V1 Scope
 
@@ -62,7 +62,7 @@ RELXEN_BASE_URL=http://localhost:3000 scripts/export_live_evidence.sh
 RELXEN_BASE_URL=http://localhost:3000 scripts/run_testnet_soak.sh
 ```
 
-Artifacts are written under `artifacts/testnet-soak/<timestamp>/` and are ignored by git. The scripts export masked credential summaries but never raw secrets. They do not create credentials, arm execution, or place orders; the operator performs those actions through the existing UI/API gates. The latest recorded status is in [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md). If no valid TESTNET credential is available, the real exchange drill is marked not exercised rather than faked.
+Artifacts are written under `artifacts/testnet-soak/<timestamp>/` and are ignored by git. The scripts export masked credential summaries but never raw secrets. They do not create credentials, arm execution, or place orders; the operator performs those actions through the existing UI/API gates. The latest recorded status is in [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md), and the current real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`. If no valid TESTNET credential is available, the real exchange drill must still be marked not exercised rather than faked.
 
 ## Quick Start
 
@@ -97,6 +97,7 @@ Defaults are documented in `.env.example`.
 - `RELXEN_LOG_LEVEL`: tracing filter, default `info,relxen=debug`.
 - `RELXEN_AUTO_START`: start the market stream after bootstrap, default `true`.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables manual MAINNET canary submission path when every other gate passes, default `false`.
+- `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for bounded soak validation, default `false`.
 
 SQLite migrations run automatically when the repository connects. The app enables WAL mode, `synchronous = normal`, and a busy timeout.
 

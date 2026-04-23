@@ -500,6 +500,7 @@ pub struct FakeLiveExchange {
     pub account: Option<LiveAccountSnapshot>,
     pub rules: Option<LiveSymbolRules>,
     pub user_events: Mutex<VecDeque<Result<LiveUserDataEvent, AppError>>>,
+    pub user_trades: Mutex<Vec<LiveFillRecord>>,
     pub preflight_accept: bool,
     pub submitted_orders: Mutex<Vec<LiveOrderRecord>>,
     pub fail_submit: bool,
@@ -569,6 +570,7 @@ impl Default for FakeLiveExchange {
             account: Some(fake_account_snapshot(LiveEnvironment::Testnet)),
             rules: Some(fake_symbol_rules(LiveEnvironment::Testnet, Symbol::BtcUsdt)),
             user_events: Mutex::new(VecDeque::new()),
+            user_trades: Mutex::new(Vec::new()),
             preflight_accept: true,
             submitted_orders: Mutex::new(Vec::new()),
             fail_submit: false,
@@ -867,9 +869,14 @@ impl LiveExchangePort for FakeLiveExchange {
         _environment: LiveEnvironment,
         _secret: &LiveCredentialSecret,
         _symbol: Symbol,
-        _limit: usize,
+        limit: usize,
     ) -> AppResult<Vec<LiveFillRecord>> {
-        Ok(Vec::new())
+        let mut fills = self.user_trades.lock().await.clone();
+        fills.sort_by_key(|fill| fill.created_at);
+        if fills.len() > limit {
+            fills = fills.split_off(fills.len() - limit);
+        }
+        Ok(fills)
     }
 }
 

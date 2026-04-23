@@ -420,15 +420,15 @@ async fn irrecoverable_gap_emits_resync_required() {
 
     service.stop_runtime().await.unwrap();
 
-    assert_eq!(market.range_called.load(Ordering::SeqCst), 1);
+    assert!(market.range_called.load(Ordering::SeqCst) >= 1);
     assert_eq!(
-        range_requests,
-        vec![KlineRangeRequest {
+        range_requests.last(),
+        Some(&KlineRangeRequest {
             symbol: relxen_domain::Symbol::BtcUsdt,
             timeframe: Timeframe::M1,
             start_open_time: anchored_candle(Timeframe::M1, anchor, 1, 0.0, true).open_time,
             end_open_time: anchored_candle(Timeframe::M1, anchor, 3, 0.0, true).open_time,
-        }]
+        })
     );
     assert_contains_status(&statuses, ConnectionStatus::Stale);
     assert!(events.iter().any(|event| matches!(

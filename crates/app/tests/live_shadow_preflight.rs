@@ -6,9 +6,10 @@ use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceO
 use relxen_domain::{
     AsoMode, CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
     LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
-    LiveExecutionRequest, LiveKillSwitchRequest, LiveOrderSide, LiveOrderType, LiveRiskLimits,
-    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
-    LiveShadowStreamState, LiveUserDataEvent, Settings, Symbol, Timeframe,
+    LiveExecutionRequest, LiveFillRecord, LiveKillSwitchRequest, LiveOrderSide, LiveOrderStatus,
+    LiveOrderType, LiveRiskLimits, LiveRiskProfile, LiveRuntimeState, LiveShadowBalance,
+    LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState, LiveUserDataEvent, Settings,
+    Symbol, Timeframe,
 };
 
 use support::{
@@ -326,6 +327,77 @@ async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
         canceled.order.unwrap().status.as_str(),
         relxen_domain::LiveOrderStatus::Canceled.as_str()
     );
+}
+
+#[tokio::test]
+async fn refresh_live_shadow_repairs_recent_order_and_fill_state() {
+    let exchange = arc(FakeLiveExchange::default());
+    let service = live_shadow_service(exchange.clone()).await;
+    create_valid_credential(&service).await;
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Market, None)
+        .await
+        .unwrap();
+    let intent_id = preview.intent.as_ref().unwrap().id.clone();
+    let executed = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: Some(intent_id),
+            confirm_testnet: true,
+            confirm_mainnet_canary: false,
+            confirmation_text: None,
+        })
+        .await
+        .unwrap();
+    let order = executed.order.unwrap();
+
+    {
+        let mut submitted = exchange.submitted_orders.lock().await;
+        let submitted_order = submitted
+            .iter_mut()
+            .find(|candidate| candidate.id == order.id)
+            .expect("submitted order should exist in fake exchange");
+        submitted_order.status = LiveOrderStatus::Filled;
+        submitted_order.executed_qty = submitted_order.quantity.clone();
+        submitted_order.avg_price = Some("100000".to_string());
+        submitted_order.updated_at = relxen_app::now_ms();
+    }
+    exchange.user_trades.lock().await.push(LiveFillRecord {
+        id: "repair-fill".to_string(),
+        order_id: None,
+        client_order_id: None,
+        exchange_order_id: order.exchange_order_id.clone(),
+        symbol: order.symbol,
+        side: order.side,
+        quantity: order.quantity.clone(),
+        price: "100000".to_string(),
+        commission: Some("0.01".to_string()),
+        commission_asset: Some("USDT".to_string()),
+        realized_pnl: Some("0".to_string()),
+        trade_id: Some("repair-trade".to_string()),
+        event_time: relxen_app::now_ms(),
+        created_at: relxen_app::now_ms(),
+    });
+
+    service.refresh_live_shadow().await.unwrap();
+    let repaired_order = service
+        .list_live_orders(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == order.id)
+        .expect("repaired order should still be present");
+    assert_eq!(repaired_order.status, LiveOrderStatus::Filled);
+    let repaired_fill = service
+        .list_live_fills(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|fill| fill.id == "repair-fill")
+        .expect("recent-window repair should append fill");
+    assert_eq!(repaired_fill.order_id.as_deref(), Some(order.id.as_str()));
 }
 
 #[tokio::test]

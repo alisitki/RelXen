@@ -10,6 +10,7 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Paper mode remains complete and isolated.
 - Live foundations are implemented for credential metadata, OS secure storage, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
 - MAINNET execution is disabled by default and MAINNET auto-execution is not implemented.
+- A real TESTNET soak was completed on 2026-04-23 and captured under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
 - The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation or explicit TESTNET auto start, with fail-closed gates.
 - The repository can place a MAINNET canary `MARKET` / `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, and all execution/reconciliation gates pass.
 - The repository stores live credential metadata in SQLite and raw secrets through the OS secure-storage abstraction only.
@@ -76,8 +77,8 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Multi-symbol concurrent runtime.
 - Broker-grade audit reporting.
 - Advanced order types beyond the first constrained live slice.
-- MAINNET canary operation before a real TESTNET soak evidence bundle is captured and reviewed.
+- Broad MAINNET operation beyond one bounded manual canary session.
 
 ## Design Rule
 
-Future live implementation must proceed in small slices. The next implementation task is creating/selecting a valid TESTNET credential through the secure-store flow, then running the documented real TESTNET soak drill and attaching the generated evidence bundle to the latest soak report without enabling mainnet.
+Future live implementation must proceed in small slices. The next implementation task is one bounded manual MAINNET canary session using the existing gates, with a matching evidence bundle and report update, while keeping MAINNET auto-execution disabled.

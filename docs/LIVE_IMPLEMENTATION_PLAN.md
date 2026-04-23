@@ -220,11 +220,11 @@ Key risks: Real financial loss, operator confusion, stale account state, exchang
 
 Rollback/fail-closed behavior: Kill switch, disarm, disable `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`, credential revocation, and paper-only fallback.
 
-## Phase 4A — Testnet Soak Evidence Slice (Tooling Complete, Real Drill Pending)
+## Phase 4A — Testnet Soak Evidence Slice (Complete)
 
 Goal: Produce operational evidence for TESTNET execution, kill switch, cancel, flatten, restart repair, reconnect repair, auto-execution, and recent-window repair honesty before any MAINNET canary recommendation.
 
-Status: Runbook, evidence export tooling, guided drill wrapper, latest report, and mainnet canary checklist are in place. The first real validation attempt reached the live credential/status API boundary and stopped because `/api/live/credentials` returned no TESTNET credential metadata. Real exchange drill remains pending valid operator-provided TESTNET credentials.
+Status: Completed with a real TESTNET soak on 2026-04-23. The run captured credential validation, readiness, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and duplicate-safe auto proof. The current evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` and the latest recommendation is CONDITIONAL GO for one bounded manual MAINNET canary session.
 
 Non-goals: No new order types, no hidden drill trigger, no mainnet enablement, no broad incident-management subsystem.
 
@@ -253,15 +253,15 @@ Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=fals
 
 ## Smallest Safe Next Implementation Batch
 
-Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
+Run one single-order manual MAINNET canary session with the existing gates and capture a matching evidence bundle plus report update.
 
 ## What Not To Do Next
 
 - Do not enable broad mainnet operation beyond the existing manual canary gate.
 - Do not store secrets in SQLite or frontend storage.
 - Do not turn the paper engine into live reconciliation truth.
-- Do not run MAINNET canary until testnet auto-execution, kill-switch drills, and reconciliation evidence are documented.
-- Do not treat `scripts/export_live_evidence.sh` output from an empty/no-credential smoke run as real exchange evidence.
+- Do not run MAINNET canary without the current real TESTNET evidence bundle and updated checklist.
+- Do not use the TESTNET drill helper in a MAINNET session.
 - Do not expand to multiple symbols while live boundaries are still immature.
 
 ## Avoiding An Endless Rewrite

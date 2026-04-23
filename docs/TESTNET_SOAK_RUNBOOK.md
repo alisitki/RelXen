@@ -6,6 +6,8 @@ This runbook defines the bounded TESTNET soak drill for RelXen live execution. I
 
 MAINNET canary must remain disabled during this drill.
 
+The latest real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
+
 ## Preconditions
 
 - Paper Mode V1 is runnable.
@@ -27,6 +29,14 @@ Use normal local runtime unless you intentionally need a separate database:
 ```sh
 cargo run -p relxen-server
 ```
+
+Optional drill-only helper enablement, only if a bounded window produces no natural closed-candle auto signal:
+
+```sh
+RELXEN_ENABLE_TESTNET_DRILL_HELPERS=true cargo run -p relxen-server
+```
+
+Leave `RELXEN_ENABLE_TESTNET_DRILL_HELPERS=false` for normal runtime.
 
 Confirm health:
 
@@ -186,7 +196,15 @@ Pass criteria:
 
 - Auto mode never trades from unfinished candles.
 - Same signal/open time is not submitted twice across reconnect or restart.
-- If no natural signal appears, mark the scenario not exercised. Do not add an unsafe synthetic signal to a normal runtime.
+- If no natural signal appears in the bounded drill window, you may use the explicit TESTNET-only drill helper:
+
+```sh
+curl -X POST http://localhost:3000/api/live/drill/auto/replay-latest-signal \
+  -H 'content-type: application/json' \
+  -d '{"confirm_testnet_drill":true}'
+```
+
+- The helper is off by default, requires `RELXEN_ENABLE_TESTNET_DRILL_HELPERS=true`, replays the latest persisted closed signal through the existing auto path, and must never be used in any MAINNET session.
 
 ### 10. Recent-Window Repair Honesty
 
@@ -246,4 +264,4 @@ Update `docs/LATEST_TESTNET_SOAK_REPORT.md` with:
 - current mainnet canary go/no-go recommendation
 - evidence bundle path
 
-Do not recommend MAINNET canary until a real TESTNET evidence bundle covers manual execution, kill switch, restart repair, reconnect repair, and either auto-execution or a documented no-signal timeout.
+Current status: the real bundle at `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` supports a bounded CONDITIONAL GO for one manual MAINNET canary session later. MAINNET remains default-off until that session is intentionally enabled and separately evidenced.

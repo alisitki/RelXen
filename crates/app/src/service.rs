@@ -1110,7 +1110,7 @@ impl AppService {
             event = "live_shadow_resynced",
             "live shadow state refreshed from REST"
         );
-        self.refresh_live_status_from_repository().await
+        self.repair_live_execution_recent_window().await
     }
 
     pub async fn build_live_intent_preview(
@@ -1348,7 +1348,22 @@ impl AppService {
             )
             .await
         {
-            for fill in fills {
+            let recent_orders = self
+                .repository
+                .list_live_orders(self.options.recent_live_order_limit)
+                .await?;
+            for mut fill in fills {
+                if fill.order_id.is_none() || fill.client_order_id.is_none() {
+                    if let Some(order) = recent_orders.iter().find(|order| {
+                        fill.exchange_order_id == order.exchange_order_id
+                            || fill.client_order_id.as_deref()
+                                == Some(order.client_order_id.as_str())
+                    }) {
+                        fill.order_id.get_or_insert_with(|| order.id.clone());
+                        fill.client_order_id
+                            .get_or_insert_with(|| order.client_order_id.clone());
+                    }
+                }
                 self.repository.append_live_fill(&fill).await?;
                 self.publish_fill_and_execution(fill).await?;
                 repaired_any = true;

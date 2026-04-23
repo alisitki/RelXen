@@ -16,7 +16,7 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Minimum free balance after estimated fee and margin.
 - Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` and all canary gates.
 - Explicit operator-configured risk profile before MAINNET canary readiness.
-- Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session.
+- Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session. The current evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` and supports a bounded CONDITIONAL GO for one manual canary only.
 
 ## Runtime Guards
 
@@ -49,7 +49,7 @@ Live runtime may start only when all are true:
 - Operator has confirmed the current environment, especially mainnet.
 - Dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
 - MAINNET canary has the server canary flag enabled and exact confirmation text for the current preview.
-- MAINNET canary review has a current TESTNET soak evidence bundle, or the operator explicitly records a NO-GO/exception decision outside normal RelXen operation.
+- MAINNET canary review has the current TESTNET soak evidence bundle and updated checklist.
 
 ## Stop Conditions
 
@@ -74,6 +74,7 @@ Live runtime must stop or degrade when:
 - Manual refresh of credentials, rules, and account snapshot.
 - Clear recovery workflow after failure.
 - Exact confirmation before MAINNET canary execution.
+- No TESTNET drill helper is enabled or used in a MAINNET session.
 
 Manual flatten should be an intent routed through the same credential, rules, precision, reduce-only, and reconciliation gates as strategy orders.
 The implemented TESTNET flatten path cancels active-symbol open orders first, then submits a reduce-only MARKET close only when account mode and shadow position state are deterministic.

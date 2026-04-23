@@ -2,7 +2,7 @@
 
 ## Current Recommendation
 
-Default recommendation: NO-GO until a real TESTNET soak evidence bundle has been captured and reviewed. The latest validation attempt stopped before exchange execution because no TESTNET credential metadata was available.
+Default recommendation: CONDITIONAL GO for one bounded manual MAINNET canary session only after reviewing the real TESTNET evidence bundle at `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` and [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md).
 
 MAINNET canary is engineered behind explicit server and operator gates, but the operator should not enable it from a fresh checkout without current testnet drill evidence.
 
@@ -25,6 +25,7 @@ MAINNET canary is engineered behind explicit server and operator gates, but the 
 - MAINNET auto execution remains unavailable.
 - Preview is fresh and matches the displayed exact confirmation text.
 - Operator has reviewed max notional, max leverage, max daily loss, and flatten procedure.
+- No TESTNET drill helper is enabled or used in the MAINNET session.
 
 ## Immediate No-Go Conditions
 

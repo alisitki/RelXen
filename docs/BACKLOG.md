@@ -60,23 +60,27 @@
 
 ## Completed Soak/Evidence Items
 
-- Real TESTNET validation attempt reached the live API credential/status boundary and stopped honestly because no TESTNET credential metadata was available.
-- Blocked-run evidence bundle generated under `artifacts/testnet-soak/real-validation-blocked-20260423T1424Z/`.
+- Real TESTNET credential creation, selection, and validation through the secure-store flow.
+- Real TESTNET readiness/shadow bootstrap, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and auto duplicate-suppression evidence.
+- Real evidence bundle generated under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
 - Evidence export now includes masked credential summaries to make credential blockers auditable without exposing secrets.
 - Bounded TESTNET soak runbook covering credential readiness, shadow sync, preview, preflight, real TESTNET execution, cancel, flatten, kill switch, restart repair, reconnect repair, auto-executor proof, and recent-window repair limits.
 - Secret-safe evidence export script using existing read-only API endpoints.
 - Guided operator soak wrapper with checkpoint capture and no built-in order placement.
 - Mainnet canary checklist with explicit hard preconditions and no-go conditions.
-- Latest soak report template/status that distinguishes real exchange evidence from mocked/test-only evidence.
+- Latest soak report updated with real exchange evidence, targeted fixes, and a conditional-go recommendation.
+- TESTNET-only, default-off drill helper for replaying the latest persisted closed signal through the existing auto executor when no natural signal appears during a bounded soak window.
+- Manual shadow refresh now performs bounded recent-window execution repair.
+- Recent-window repaired fills now backfill local order references when authoritative exchange trade data can be matched to a repaired order.
 - Git ignore policy for generated soak artifacts under `artifacts/testnet-soak/`.
 
 ## Immediate Next Task
 
-Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
+Run one single-order manual MAINNET canary session with the existing gates and capture a matching evidence bundle plus report update.
 
 ## Deferred Live Execution Work
 
-- Broader mainnet enablement policy after canary evidence and soak drills.
+- Broader mainnet enablement policy after the bounded manual canary evidence.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - Hedge mode and multi-assets mode support if explicitly designed and tested.
 - Portfolio-level exposure controls beyond the active symbol.

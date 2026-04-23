@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Real TESTNET Soak Validation v1 attempted; blocked before exchange execution by missing operator-provided TESTNET credential metadata.
+Real TESTNET Soak Validation v1 completed with operator-provided TESTNET credentials and a captured evidence bundle.
 
 ## Current Status
 
@@ -20,21 +20,22 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms and has
 - MAINNET auto-execution remains unavailable.
 - The bounded TESTNET soak drill is documented in `docs/TESTNET_SOAK_RUNBOOK.md`.
 - Evidence export scripts write secret-safe artifacts under `artifacts/testnet-soak/<timestamp>/`.
-- The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records `/api/live/credentials=[]`, `credentials_missing`, and `active_credential=null` for this validation attempt.
+- The current real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
+- The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records real TESTNET credential validation, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart/recent-window repair, reconnect repair, and TESTNET auto proof with duplicate suppression.
 
 Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent runtime, Tauri packaging, auth, multi-user support, strategy marketplace, and optimization tooling remain out of scope.
 
 ## Completed In This Phase
 
-- Attempted the real TESTNET validation path through the running server with mainnet canary forced off.
-- Proved the real-drill blocker through API state: no live credential summaries exist and live status is `credentials_missing`.
-- Exported a blocked-run evidence bundle under `artifacts/testnet-soak/real-validation-blocked-20260423T1424Z/`.
-- Added masked credential summaries to evidence exports so missing-credential blockers are auditable without exposing secrets.
-- Added testnet soak runbook and mainnet canary checklist.
-- Added latest soak report with explicit real-vs-mocked evidence status.
-- Added read-only live evidence export script using existing API endpoints.
-- Added guided operator soak wrapper that captures checkpoints without placing orders itself.
-- Documented that MAINNET canary remains NO-GO until real TESTNET evidence is captured and reviewed.
+- Created, selected, and validated the operator-provided TESTNET credential through the existing secure-store flow.
+- Proved real TESTNET readiness and shadow bootstrap with mainnet canary forced off.
+- Captured real TESTNET preview, preflight, manual execution, cancel, flatten, kill switch, restart/recent-window repair, reconnect/recovery, and auto duplicate-suppression evidence.
+- Exported the real evidence bundle under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
+- Fixed stale visible account snapshots after shadow refresh by deriving the visible account snapshot from the latest shadow state.
+- Added a TESTNET-only, default-off drill helper for replaying the latest persisted closed signal through the existing auto executor when no natural signal appears during a bounded soak window.
+- Fixed manual shadow refresh so it also performs bounded recent-window execution repair.
+- Fixed recent-window repaired fills so they backfill local `order_id` and `client_order_id` when an authoritative exchange trade can be matched to a repaired order.
+- Updated the soak runbook, mainnet checklist, latest soak report, runbook, README, and live-readiness docs with the real run and current recommendation.
 
 ## Previously Completed Execution Hardening
 
@@ -51,20 +52,19 @@ Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent 
 
 ## Current Focus
 
-The project is ready for a controlled real TESTNET soak drill once an operator creates/selects a TESTNET credential through the secure-store flow. Mainnet remains default-off and fail-closed; current recommendation is NO-GO for manual MAINNET canary until the real TESTNET evidence bundle exists.
+The project now has a real TESTNET evidence bundle and a bounded CONDITIONAL GO recommendation for one manual MAINNET canary session. Mainnet remains default-off and fail-closed until an operator intentionally enables the canary server gate and follows the updated checklist/runbook exactly.
 
 ## declared_next_task
 
-Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
+Run one single-order manual MAINNET canary session with the existing gates and capture a matching evidence bundle plus report update.
 
 ## done_when
 
-- A valid TESTNET credential is created or selected and validated through the secure-store flow.
-- `scripts/run_testnet_soak.sh` captures a real evidence bundle.
-- Manual TESTNET execution, kill switch, restart repair, reconnect repair, and applicable cancel/flatten behavior are recorded.
-- TESTNET auto mode is exercised with a natural closed-candle signal or documented as a bounded no-signal timeout.
-- `docs/LATEST_TESTNET_SOAK_REPORT.md` is updated with pass/fail/not-exercised results and a revised mainnet canary recommendation.
-- `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION` remains false during the TESTNET drill.
+- `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` is enabled only for the canary session and turned back off immediately afterward.
+- Exactly one manual MAINNET canary order is submitted through the existing confirmation-gated path.
+- ACK, authoritative reconciliation, kill switch, and rollback/flatten behavior are captured in a fresh evidence bundle.
+- `docs/LATEST_TESTNET_SOAK_REPORT.md` or a follow-up canary report records pass/fail outcomes and the post-canary recommendation.
+- No auto execution, no conditional/algo orders, and no hidden bypass path are used.
 
 ## Not Now
 
@@ -80,7 +80,7 @@ Create/select a valid TESTNET credential through the secure-store flow, then run
 
 ## Known Blockers
 
-- Real exchange smoke for TESTNET auto/canary paths requires valid operator-provided Binance testnet credentials and OS secure-storage availability.
+- MAINNET canary still requires intentional operator enablement, a valid mainnet credential, and a deliberate decision to move beyond the default-off state.
 
 ## Key References
 

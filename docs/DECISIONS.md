@@ -85,3 +85,11 @@ Live execution gates use Binance USDⓈ-M dedicated position-mode and multi-asse
 ### Soak evidence uses existing read-only APIs
 
 TESTNET soak evidence is exported by scripts that call existing REST endpoints instead of adding a privileged evidence endpoint or hidden drill trigger. This keeps the server execution surface unchanged, avoids accidental order placement from tooling, and makes real exchange evidence explicit rather than inferred from smoke exports.
+
+### TESTNET auto drill helper is explicit, gated, and not part of normal runtime
+
+When a bounded soak window produces no natural fresh closed-candle auto signal, RelXen may expose a TESTNET-only drill helper that replays the latest persisted closed signal through the existing auto-execution path. The helper is off by default behind `RELXEN_ENABLE_TESTNET_DRILL_HELPERS=false`, requires explicit confirmation, and must never be used in MAINNET sessions. This keeps soak validation bounded without inventing a parallel execution path.
+
+### Manual shadow refresh is also the bounded execution-repair path
+
+Manual `Refresh Shadow` does not only refresh read-only account state; it also runs the existing recent-window execution repair logic. This keeps restart/reconnect/operator recovery on one bounded path instead of forcing operators to trust stale ACK-only order records after a stream gap or restart.

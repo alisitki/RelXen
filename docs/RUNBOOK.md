@@ -29,6 +29,7 @@ cargo run -p relxen-server
 - `RELXEN_LOG_LEVEL`: tracing filter. Default is `info,relxen=debug`.
 - `RELXEN_AUTO_START`: whether bootstrap should start the WebSocket runtime. Default is `true`.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables the manual MAINNET canary path when every other gate passes. Default is `false`; leave it false for normal paper/testnet operation.
+- `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for a bounded soak drill. Default is `false`; leave it off outside intentional soak validation.
 
 ## Database And Migrations
 
@@ -83,7 +84,7 @@ RELXEN_BASE_URL=http://localhost:3000 scripts/run_testnet_soak.sh
 
 The guided script does not create credentials, arm execution, or place orders. It pauses while the operator performs each drill step through the UI/API and captures status, masked credential summaries, orders, fills, preflights, blocking reasons, and repair-related logs. If valid TESTNET credentials are unavailable, mark the real exchange scenarios as not exercised and keep the generated smoke/export artifacts separate from real-drill evidence.
 
-The latest go/no-go report is [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md). MAINNET canary checklist and no-go criteria are in [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md).
+The latest go/no-go report is [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md). The current real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`. MAINNET canary checklist and no-go criteria are in [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md).
 
 ## Runtime States
 
@@ -113,9 +114,17 @@ The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight 
 10. Use `Configure Conservative Risk Profile` before any MAINNET canary review. MAINNET canary readiness cannot pass without an explicit operator-configured risk profile.
 11. Use `Execute TESTNET Preview` only when the UI shows `TESTNET EXECUTION READY`. Confirm the browser prompt. This sends a real TESTNET matching-engine order, not a mainnet order.
 12. Use `Start TESTNET Auto` only after shadow sync is fresh and you intentionally want closed-candle ASO signals to submit TESTNET orders. Auto mode is TESTNET-only and suppresses duplicate signal/candle intents.
-13. Use `Engage Kill Switch` to block all new live submissions immediately. Release requires explicit operator action.
-14. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is mainnet, a risk profile is configured, all gates pass, and the displayed exact confirmation text is entered.
-15. Use cancel/cancel-all or flatten only when shadow state is coherent. RelXen cancels active-symbol open orders first for flatten, then submits a reduce-only MARKET close intent when safe.
+13. If a bounded soak window produces no natural fresh closed-candle auto signal, you may use the drill-only helper endpoint only when `RELXEN_ENABLE_TESTNET_DRILL_HELPERS=true`:
+
+```sh
+curl -X POST http://localhost:3000/api/live/drill/auto/replay-latest-signal \
+  -H 'content-type: application/json' \
+  -d '{"confirm_testnet_drill":true}'
+```
+
+14. Use `Engage Kill Switch` to block all new live submissions immediately. Release requires explicit operator action.
+15. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is mainnet, a risk profile is configured, all gates pass, and the displayed exact confirmation text is entered.
+16. Use cancel/cancel-all or flatten only when shadow state is coherent. RelXen cancels active-symbol open orders first for flatten, then submits a reduce-only MARKET close intent when safe.
 
 If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. Never put live API secrets in `.env`, SQLite, frontend storage, logs, or screenshots.
 
@@ -168,7 +177,7 @@ To switch back safely, click `Disarm` or set the execution preference to `PAPER 
 
 If the stream expires, disconnects, or cannot be reconciled, the UI should show `SHADOW DEGRADED`, `execution_degraded`, `shadow_stream_down`, or `shadow_state_ambiguous`. Stop and restart shadow sync after checking credentials/connectivity. Do not interpret preflight success as exchange position truth.
 
-RelXen forces user-data stream reconnect plus REST repair before the Binance 24-hour user-data WebSocket lifecycle limit. After an ambiguous submission or reconnect, do not retry manually until `/api/live/status` shows a coherent order state or a degraded/blocked state with a clear repair outcome. Repair is intentionally recent-window only because Binance order/trade query retention is finite; older ambiguity must remain degraded and operator-reviewed.
+RelXen forces user-data stream reconnect plus REST repair before the Binance 24-hour user-data WebSocket lifecycle limit. After an ambiguous submission or reconnect, do not retry manually until `/api/live/status` shows a coherent order state or a degraded/blocked state with a clear repair outcome. Repair is intentionally recent-window only because Binance order/trade query retention is finite; older ambiguity must remain degraded and operator-reviewed. Manual `Refresh Shadow` now also triggers bounded recent-window execution repair so restart/reconnect recovery uses the same operator-facing repair path captured in the real TESTNET soak.
 
 Real order submissions request `ACK`. `ACK` means Binance accepted the request, not that the order is filled. User-data stream events and recent-window REST repair define final order, fill, account, and position truth.
 

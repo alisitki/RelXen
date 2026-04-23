@@ -2,69 +2,135 @@
 
 ## Report Status
 
-Status: Real TESTNET validation attempted; real exchange soak blocked before execution because no TESTNET credential metadata exists in the active local API state.
+Status: Real TESTNET soak completed with operator-provided credentials, secret-safe evidence export, and targeted drill-blocking fixes.
 
 Date: 2026-04-23
 
-Reason real drill was not executed: `/api/live/credentials` returned an empty list, `/api/live/status` reported `credentials_missing`, `active_credential=null`, and `mainnet_canary.enabled_by_server=false`. Without an operator-provided TESTNET credential in the secure-store/metadata flow, RelXen cannot validate credentials, start shadow sync, build executable readiness, or place TESTNET orders.
+Evidence bundle: `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`
 
-## Evidence Produced In This Batch
+Active credential summary during the run:
 
-- Evidence export tooling: `scripts/export_live_evidence.sh`
-- Guided operator capture wrapper: `scripts/run_testnet_soak.sh`
-- Testnet drill procedure: `docs/TESTNET_SOAK_RUNBOOK.md`
-- Mainnet canary checklist: `docs/MAINNET_CANARY_CHECKLIST.md`
-- Real-validation blocked export generated ignored artifact path: `artifacts/testnet-soak/real-validation-blocked-20260423T1424Z/`
-- The evidence bundle includes `credentials.json` with masked credential summaries only; this run exported zero credentials.
+- alias: `codex-testnet-20260423`
+- environment: `testnet`
+- api key hint: `jl9F…drYl`
 
-## Smoke Verification
+MAINNET remained disabled throughout the run: `/api/live/status.mainnet_canary.enabled_by_server=false`.
 
-- `/api/health` returned `ok`.
-- `/api/bootstrap` returned 500 candles for `BTCUSDT`.
-- `/api/live/credentials` returned `[]`.
-- `/api/live/status` returned `credentials_missing`, `execution_blocked`, `active_credential=null`, and `mainnet_canary.enabled_by_server=false`.
-- Static frontend serving at `/` returned HTTP 200.
-- Evidence export produced manifest, status, masked credential summaries, bootstrap, orders, fills, preflights, blocking reasons, repair events, logs, timeline, and session summary files.
+## What Was Exercised For Real
 
-This export is not a real exchange drill because no TESTNET credential was available.
+- TESTNET credential creation, selection, and validation through the existing secure-store flow.
+- Live readiness refresh and shadow sync startup.
+- Precision-aware preview build and Binance testnet `order/test` preflight.
+- Real TESTNET manual `MARKET` execution with ACK-first handling and later authoritative fill state.
+- Real TESTNET manual `LIMIT` execution kept working long enough to exercise real cancel.
+- Real TESTNET flatten from a deterministic open position.
+- Kill switch engage and release.
+- Restart against the same SQLite database with bounded recent-window execution repair.
+- Shadow stop/start and manual shadow refresh as reconnect/recovery evidence.
+- TESTNET auto-executor proof and duplicate-signal suppression proof through a TESTNET-only, default-off drill helper because no natural closed-candle crossover appeared during the bounded window.
+
+## What Was Not Exercised As A Natural Market Event
+
+- A natural fresh closed-candle crossover did not arrive during the bounded drill window.
+- The auto path was therefore exercised through the explicit drill helper at `/api/live/drill/auto/replay-latest-signal` with `RELXEN_ENABLE_TESTNET_DRILL_HELPERS=true`.
+- That helper is TESTNET-only, off by default, requires explicit confirmation, and replays the latest persisted closed signal through the existing auto-execution path instead of creating a synthetic order path.
 
 ## Scenario Results
 
 | Scenario | Result | Evidence |
 | --- | --- | --- |
-| Credential / readiness / shadow bootstrap | Blocked before exchange call | `/api/live/credentials=[]`; status `credentials_missing` |
-| Manual preview + preflight sanity | Not exercised for real | Requires valid TESTNET credential and readiness |
-| Real TESTNET manual execution | Not exercised for real | Requires valid TESTNET credential |
-| Cancel flow | Not exercised for real | Requires a working TESTNET order |
-| Flatten flow | Not exercised for real | Requires deterministic TESTNET position |
-| Kill switch | Covered by existing automated tests; not real-drill exercised | API/app/frontend tests from executor hardening |
-| Restart / recent-window repair | Covered by existing automated tests; not real-drill exercised | App/server persistence and repair tests from executor hardening |
-| Reconnect / repair | Covered by existing automated tests; not real-drill exercised | Shadow/recovery tests from executor hardening |
-| Auto-executor proof | Covered by existing automated tests; not real-drill exercised | Closed-candle auto-executor tests from mainnet-readiness hardening |
-| Recent-window repair honesty | Documented | Runbook and live-risk docs |
+| Credential / readiness / shadow bootstrap | Pass | Credential created/validated; shadow sync running; readiness coherent |
+| Manual preview + preflight sanity | Pass | Real preview built; `PREFLIGHT PASSED. No order was placed.` |
+| Real TESTNET manual execution | Pass | Real `MARKET` buy submitted; ACK captured separately from eventual fill |
+| Cancel flow | Pass | Real `LIMIT` buy at `72000` entered `working` then `canceled` |
+| Flatten flow | Pass | Real flatten used reduce-only `MARKET` close; final position returned flat |
+| Kill switch | Pass | Engage blocked new submissions; release required normal readiness recovery |
+| Restart / recent-window repair | Pass after fix | Restart preserved recent orders/fills; bounded repair reconciled recent execution without duplicate submission |
+| Reconnect / repair | Pass after fix | Shadow stop/start and manual refresh recovered truthfully; repair remained bounded recent-window only |
+| Auto-executor proof | Pass via drill helper | First replay submitted exactly one real TESTNET auto order |
+| Duplicate-signal suppression | Pass | Second replay of the same persisted closed signal was suppressed with `duplicate_signal_suppressed` |
+| Recent-window repair honesty | Pass | Repair remained bounded; no infinite recovery claims were made |
 
-## Bugs Found And Fixed
+## Real Execution Timeline Summary
 
-- No executor bug was found because the drill could not progress past credential discovery.
-- Improved evidence export to include masked credential summaries so missing-credential blockers are auditable without exposing secrets.
+1. Credential created and validated through the live credential API.
+2. Live mode switched to read-only, risk profile configured conservatively, live mode armed, and shadow sync started.
+3. Real preview built for `BTCUSDT`; preflight passed with no order placement.
+4. Real TESTNET manual `MARKET` buy submitted with ACK handling, then later reconciled to `filled`.
+5. Real TESTNET manual flatten closed the resulting position.
+6. Real TESTNET `LIMIT` buy at `72000` stayed working long enough to cancel, and final state reconciled to `canceled`.
+7. Kill switch engaged and released successfully.
+8. Restart preserved recent state, then repair and shadow restart recovered coherent status.
+9. TESTNET auto mode ran; because no natural bounded-window signal appeared, the explicit drill helper replayed the latest persisted closed signal once, creating one real TESTNET auto order.
+10. A second replay of the same signal was suppressed as a duplicate.
+11. Restart plus manual shadow refresh repaired the auto order and repaired fills.
+12. Final flatten returned the exchange shadow position to flat, auto mode was stopped, and the final evidence export was captured.
+
+## Bugs Found And Fixed In This Batch
+
+1. Visible account snapshots could stay stale after shadow refresh, hiding a real non-zero exchange position after a filled TESTNET order.
+   Fix: visible live status now derives the account snapshot from the freshest shadow state when available.
+
+2. Manual shadow refresh did not also perform bounded recent-window execution repair.
+   Impact: a real TESTNET auto-submitted order could stay stuck at `accepted` after restart/reconnect even though the exchange position was already open.
+   Fix: `refresh_live_shadow()` now runs the existing bounded recent-window repair path after refreshing shadow state.
+
+3. Recent-window repaired fills did not backfill local `order_id` / `client_order_id` when the authoritative exchange trade could be matched to a repaired order.
+   Impact: repaired fills were harder to audit locally after restart/repair.
+   Fix: recent-window repair now enriches repaired fills with matched local order references.
+
+4. No natural bounded-window closed-candle crossover appeared for auto proof.
+   Fix: added a TESTNET-only, default-off drill helper that replays the latest persisted closed signal through the existing auto-execution path when explicitly enabled for a soak session.
 
 ## Bugs Deferred
 
-- None identified in this batch.
+- None considered drill-blocking after the fixes above.
+- A future production-facing auto soak should still prefer a natural crossover over the drill helper whenever the market gives one within the bounded window.
 
 ## Current Mainnet Canary Recommendation
 
-NO-GO for a real MAINNET manual canary until a real TESTNET soak evidence bundle is captured and reviewed.
+CONDITIONAL GO for one bounded manual MAINNET canary session later.
 
-The codebase has default-off canary gates, risk-profile requirements, kill switch controls, ACK-plus-authoritative-reconciliation, dedicated account-mode checks, forced user-data reconnect, and recent-window repair policy. Operational evidence is still required before recommending a real mainnet canary session.
+Rationale:
 
-## Preconditions For A Future Go
+- Real TESTNET evidence now exists for credential validation, readiness, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and duplicate-safe auto submission.
+- Mainnet remains default-off and no hidden bypass was used.
+- The remaining gap is operational, not architectural: the auto proof in this soak used the explicit TESTNET-only drill helper because no natural bounded-window crossover appeared.
 
-- Run `docs/TESTNET_SOAK_RUNBOOK.md` with valid TESTNET credentials.
-- Capture an evidence bundle with `scripts/run_testnet_soak.sh` or `scripts/export_live_evidence.sh`.
-- Demonstrate at least one real TESTNET execution lifecycle.
-- Demonstrate kill switch blocks new submissions.
-- Demonstrate restart repair does not duplicate orders.
-- Demonstrate reconnect repair recovers or truthfully degrades.
-- Demonstrate cancel and flatten when market conditions make them applicable, or document why an immediate fill prevented cancel.
-- Review `docs/MAINNET_CANARY_CHECKLIST.md` and satisfy every hard precondition.
+## Exact Preconditions For Safe Manual MAINNET Canary
+
+- Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` until the canary session starts.
+- Use a validated mainnet credential stored through the secure-store flow.
+- Configure and review a conservative risk profile before arming.
+- Start fresh shadow sync and verify one-way mode plus single-asset mode.
+- Confirm the active symbol is `BTCUSDT` or `BTCUSDC`.
+- Confirm no active paper position or ambiguous live order state exists.
+- Build one small preview only.
+- Enter the exact MAINNET confirmation text for that preview only.
+- Submit one manual canary order only.
+- Capture a new evidence bundle immediately after the canary action.
+- Do not use the TESTNET drill helper in any MAINNET session.
+
+## Commands / Surfaces Used During The Real Run
+
+- `POST /api/live/credentials`
+- `POST /api/live/credentials/:credential_id/select`
+- `POST /api/live/credentials/:credential_id/validate`
+- `POST /api/live/mode`
+- `PUT /api/live/risk-profile`
+- `POST /api/live/readiness/refresh`
+- `POST /api/live/arm`
+- `POST /api/live/shadow/start`
+- `GET /api/live/intent/preview`
+- `POST /api/live/preflight`
+- `POST /api/live/execute`
+- `POST /api/live/orders/:order_ref/cancel`
+- `POST /api/live/flatten`
+- `POST /api/live/kill-switch/engage`
+- `POST /api/live/kill-switch/release`
+- `POST /api/live/auto/start`
+- `POST /api/live/auto/stop`
+- `POST /api/live/drill/auto/replay-latest-signal`
+- `scripts/export_live_evidence.sh`
+
+No raw secrets were exported in the evidence bundle, docs, or report.
