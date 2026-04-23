@@ -11,6 +11,7 @@ pub struct ServerConfig {
     pub log_level: String,
     pub auto_start: bool,
     pub enable_mainnet_canary_execution: bool,
+    pub enable_testnet_drill_helpers: bool,
 }
 
 impl ServerConfig {
@@ -31,6 +32,10 @@ impl ServerConfig {
             .ok()
             .map(|value| value.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let enable_testnet_drill_helpers = env::var("RELXEN_ENABLE_TESTNET_DRILL_HELPERS")
+            .ok()
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
         ensure_database_parent(&database_url)?;
 
@@ -41,6 +46,7 @@ impl ServerConfig {
             log_level,
             auto_start,
             enable_mainnet_canary_execution,
+            enable_testnet_drill_helpers,
         })
     }
 }

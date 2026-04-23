@@ -2,13 +2,13 @@
 
 ## Current Phase
 
-Mainnet Readiness Hardening v1 complete.
+Real TESTNET Soak Validation v1 attempted; blocked before exchange execution by missing operator-provided TESTNET credential metadata.
 
 ## Current Status
 
 Paper Mode V1 remains release-candidate complete and runnable end-to-end as a local single-user Binance Futures paper-trading dashboard.
 
-Post-v1 live execution is now mainnet-ready in bounded engineering terms:
+Post-v1 live execution is now mainnet-ready in bounded engineering terms and has a repeatable TESTNET soak evidence workflow:
 
 - TESTNET `MARKET` / `LIMIT` manual execution, cancel, cancel-all-active-symbol, flatten, and closed-candle auto-execution are implemented.
 - A kill switch blocks new live submissions immediately.
@@ -18,10 +18,25 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms:
 - User-data streams force a reconnect/REST repair before the 24-hour WebSocket lifecycle limit.
 - MAINNET manual canary execution is implemented behind `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` by default, a configured risk profile, arming, fresh shadow/rules/account state, one-way/single-asset mode, exact operator confirmation, and all normal execution gates.
 - MAINNET auto-execution remains unavailable.
+- The bounded TESTNET soak drill is documented in `docs/TESTNET_SOAK_RUNBOOK.md`.
+- Evidence export scripts write secret-safe artifacts under `artifacts/testnet-soak/<timestamp>/`.
+- The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records `/api/live/credentials=[]`, `credentials_missing`, and `active_credential=null` for this validation attempt.
 
 Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent runtime, Tauri packaging, auth, multi-user support, strategy marketplace, and optimization tooling remain out of scope.
 
 ## Completed In This Phase
+
+- Attempted the real TESTNET validation path through the running server with mainnet canary forced off.
+- Proved the real-drill blocker through API state: no live credential summaries exist and live status is `credentials_missing`.
+- Exported a blocked-run evidence bundle under `artifacts/testnet-soak/real-validation-blocked-20260423T1424Z/`.
+- Added masked credential summaries to evidence exports so missing-credential blockers are auditable without exposing secrets.
+- Added testnet soak runbook and mainnet canary checklist.
+- Added latest soak report with explicit real-vs-mocked evidence status.
+- Added read-only live evidence export script using existing API endpoints.
+- Added guided operator soak wrapper that captures checkpoints without placing orders itself.
+- Documented that MAINNET canary remains NO-GO until real TESTNET evidence is captured and reviewed.
+
+## Previously Completed Execution Hardening
 
 - Added persisted kill-switch, risk-profile, auto-executor, and intent-lock state.
 - Added canary-specific server gating via `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`; no generic mainnet bypass flag exists.
@@ -36,19 +51,20 @@ Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent 
 
 ## Current Focus
 
-The project is ready for controlled testnet auto-execution drills and manual mainnet canary review. Mainnet remains default-off and fail-closed.
+The project is ready for a controlled real TESTNET soak drill once an operator creates/selects a TESTNET credential through the secure-store flow. Mainnet remains default-off and fail-closed; current recommendation is NO-GO for manual MAINNET canary until the real TESTNET evidence bundle exists.
 
 ## declared_next_task
 
-Run a documented testnet auto-execution soak drill and capture reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.
+Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
 
 ## done_when
 
-- A repeatable soak-drill checklist exists in the runbook or a dedicated drill note.
-- TESTNET auto-execution is exercised with valid testnet credentials outside mocked tests.
-- Kill switch, cancel, flatten, reconnect, and restart repair outcomes are recorded.
-- No MAINNET canary flag is enabled during the drill.
-- Any observed operator or reconciliation gaps are converted into a bounded follow-up backlog item.
+- A valid TESTNET credential is created or selected and validated through the secure-store flow.
+- `scripts/run_testnet_soak.sh` captures a real evidence bundle.
+- Manual TESTNET execution, kill switch, restart repair, reconnect repair, and applicable cancel/flatten behavior are recorded.
+- TESTNET auto mode is exercised with a natural closed-candle signal or documented as a bounded no-signal timeout.
+- `docs/LATEST_TESTNET_SOAK_REPORT.md` is updated with pass/fail/not-exercised results and a revised mainnet canary recommendation.
+- `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION` remains false during the TESTNET drill.
 
 ## Not Now
 

@@ -220,9 +220,40 @@ Key risks: Real financial loss, operator confusion, stale account state, exchang
 
 Rollback/fail-closed behavior: Kill switch, disarm, disable `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`, credential revocation, and paper-only fallback.
 
+## Phase 4A — Testnet Soak Evidence Slice (Tooling Complete, Real Drill Pending)
+
+Goal: Produce operational evidence for TESTNET execution, kill switch, cancel, flatten, restart repair, reconnect repair, auto-execution, and recent-window repair honesty before any MAINNET canary recommendation.
+
+Status: Runbook, evidence export tooling, guided drill wrapper, latest report, and mainnet canary checklist are in place. The first real validation attempt reached the live credential/status API boundary and stopped because `/api/live/credentials` returned no TESTNET credential metadata. Real exchange drill remains pending valid operator-provided TESTNET credentials.
+
+Non-goals: No new order types, no hidden drill trigger, no mainnet enablement, no broad incident-management subsystem.
+
+Likely files/modules to touch:
+
+- `scripts`: evidence export and guided drill capture.
+- `docs`: soak runbook, latest report, mainnet checklist, project state, backlog, runbook, and README.
+- Application code only if a real drill exposes a bug in execution truthfulness, duplicate suppression, restart repair, reconnect repair, kill switch, cancel, flatten, or UI status.
+
+Tests required:
+
+- Shell syntax checks for drill scripts.
+- Full existing automated gate remains green.
+- Real TESTNET drill evidence when credentials are available.
+
+Exit criteria:
+
+- A real evidence bundle exists under `artifacts/testnet-soak/<timestamp>/`.
+- The latest soak report states pass/fail/not-exercised for every required scenario.
+- Bugs found during the drill are fixed or converted into bounded backlog items.
+- Mainnet canary go/no-go recommendation is updated from evidence.
+
+Key risks: Claiming real exchange evidence without credentials, leaking account data in artifacts, or treating a smoke export as a real drill.
+
+Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`, engage kill switch if needed, and keep paper mode operational.
+
 ## Smallest Safe Next Implementation Batch
 
-Run a documented testnet auto-execution soak drill and capture reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.
+Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
 
 ## What Not To Do Next
 
@@ -230,6 +261,7 @@ Run a documented testnet auto-execution soak drill and capture reconciliation, k
 - Do not store secrets in SQLite or frontend storage.
 - Do not turn the paper engine into live reconciliation truth.
 - Do not run MAINNET canary until testnet auto-execution, kill-switch drills, and reconciliation evidence are documented.
+- Do not treat `scripts/export_live_evidence.sh` output from an empty/no-credential smoke run as real exchange evidence.
 - Do not expand to multiple symbols while live boundaries are still immature.
 
 ## Avoiding An Endless Rewrite

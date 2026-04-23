@@ -22,6 +22,9 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - [Precision And Exchange Rules](./PRECISION_AND_EXCHANGE_RULES.md)
 - [Live Risk Controls](./LIVE_RISK_CONTROLS.md)
 - [Live Implementation Plan](./LIVE_IMPLEMENTATION_PLAN.md)
+- [Testnet Soak Runbook](./TESTNET_SOAK_RUNBOOK.md)
+- [Latest Testnet Soak Report](./LATEST_TESTNET_SOAK_REPORT.md)
+- [Mainnet Canary Checklist](./MAINNET_CANARY_CHECKLIST.md)
 - [Architecture](./ARCHITECTURE.md)
 - [Runbook](./RUNBOOK.md)
 
@@ -73,7 +76,8 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Multi-symbol concurrent runtime.
 - Broker-grade audit reporting.
 - Advanced order types beyond the first constrained live slice.
+- MAINNET canary operation before a real TESTNET soak evidence bundle is captured and reviewed.
 
 ## Design Rule
 
-Future live implementation must proceed in small slices. The next implementation task is a documented testnet auto-execution soak drill that captures reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.
+Future live implementation must proceed in small slices. The next implementation task is creating/selecting a valid TESTNET credential through the secure-store flow, then running the documented real TESTNET soak drill and attaching the generated evidence bundle to the latest soak report without enabling mainnet.

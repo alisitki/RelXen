@@ -17,7 +17,7 @@ use relxen_domain::{
     mark_to_market, quantize_down, reset_wallets, signal_from_points, validate_settings,
     warmup_candles_required, AsoCalculator, Candle, ConnectionState, ConnectionStatus,
     CreateLiveCredentialRequest, DisarmLiveModeRequest, ExecutionMode, LiveAccountShadow,
-    LiveAccountSnapshot, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
+    LiveAccountSnapshot, LiveAssetBalance, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
     LiveAutoExecutorStatus, LiveBlockingReason, LiveCancelAllRequest, LiveCancelRequest,
     LiveCancelResult, LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret,
     LiveCredentialSummary, LiveCredentialValidationResult, LiveCredentialValidationStatus,
@@ -26,12 +26,12 @@ use relxen_domain::{
     LiveFlattenResult, LiveGateCheck, LiveIntentInput, LiveIntentLock, LiveIntentLockStatus,
     LiveKillSwitchRequest, LiveKillSwitchState, LiveModePreference, LiveOrderPreflightResult,
     LiveOrderPreview, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LiveReadinessSnapshot, LiveReconciliationStatus, LiveRiskProfile, LiveRuntimeState,
-    LiveShadowBalance, LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState,
-    LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord, LiveStatusSnapshot, LiveSymbolRules,
-    LiveUserDataEvent, LiveWarning, LogEvent, PaperEngine, PerformanceStats, Position, QuoteAsset,
-    RuntimeStatus, SetLiveModePreferenceRequest, Settings, SignalEvent, SystemMetrics, Trade,
-    UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
+    LivePositionSnapshot, LiveReadinessSnapshot, LiveReconciliationStatus, LiveRiskProfile,
+    LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
+    LiveShadowStreamState, LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord,
+    LiveStatusSnapshot, LiveSymbolRules, LiveUserDataEvent, LiveWarning, LogEvent, PaperEngine,
+    PerformanceStats, Position, QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings,
+    SignalEvent, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
 };
 
 use crate::events::{AppMetadata, BootstrapPayload, OutboundEvent};
@@ -60,6 +60,7 @@ pub struct ServiceOptions {
     pub recent_live_fill_limit: usize,
     pub live_intent_ttl_ms: i64,
     pub enable_mainnet_canary_execution: bool,
+    pub enable_testnet_drill_helpers: bool,
     pub live_user_stream_forced_reconnect_ms: i64,
     pub live_repair_recent_window_limit: usize,
 }
@@ -81,6 +82,7 @@ impl Default for ServiceOptions {
             recent_live_fill_limit: 100,
             live_intent_ttl_ms: 30_000,
             enable_mainnet_canary_execution: false,
+            enable_testnet_drill_helpers: false,
             live_user_stream_forced_reconnect_ms: 24 * 60 * 60 * 1_000,
             live_repair_recent_window_limit: 100,
         }
@@ -1487,6 +1489,79 @@ impl AppService {
         self.refresh_live_status_from_repository().await
     }
 
+    pub async fn drill_replay_latest_auto_signal(&self) -> AppResult<LiveStatusSnapshot> {
+        if !self.options.enable_testnet_drill_helpers {
+            return Err(AppError::Live(
+                "testnet drill helpers are disabled by server policy".to_string(),
+            ));
+        }
+        let live_state = self.repository.load_live_state().await?;
+        if live_state.environment != LiveEnvironment::Testnet {
+            return Err(AppError::Conflict(
+                "testnet auto drill is only available on TESTNET".to_string(),
+            ));
+        }
+        let auto = self.repository.load_live_auto_executor().await?;
+        if auto.state != LiveAutoExecutorStateKind::Running {
+            return Err(AppError::Conflict(
+                "start TESTNET auto executor before running the auto drill helper".to_string(),
+            ));
+        }
+
+        let latest_signal = {
+            let persisted = self
+                .repository
+                .list_signals(32)
+                .await?
+                .into_iter()
+                .filter(|signal| signal.closed_only)
+                .max_by_key(|signal| signal.open_time);
+            if let Some(signal) = persisted {
+                signal
+            } else {
+                let state = self.state.lock().await;
+                state
+                    .signals
+                    .iter()
+                    .filter(|signal| signal.closed_only)
+                    .max_by_key(|signal| signal.open_time)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AppError::NotFound(
+                            "no closed-candle signal is available for the TESTNET auto drill"
+                                .to_string(),
+                        )
+                    })?
+            }
+        };
+        let reference_price = if let Some(close) = {
+            let state = self.state.lock().await;
+            state.candles.last().map(|candle| candle.close)
+        } {
+            close
+        } else {
+            self.repository
+                .load_recent_klines(latest_signal.symbol, latest_signal.timeframe, 1)
+                .await?
+                .last()
+                .map(|candle| candle.close)
+                .ok_or_else(|| {
+                    AppError::Conflict(
+                        "latest market price is unavailable for TESTNET auto drill".to_string(),
+                    )
+                })?
+        };
+        info!(
+            event = "testnet_auto_drill_replay_started",
+            signal_id = %latest_signal.id,
+            signal_open_time = latest_signal.open_time,
+            "replaying latest persisted closed-candle signal through TESTNET auto executor"
+        );
+        self.maybe_auto_execute_signal(latest_signal, reference_price)
+            .await?;
+        self.refresh_live_status_from_repository().await
+    }
+
     pub async fn execute_live_current_preview(
         &self,
         request: LiveExecutionRequest,
@@ -2139,12 +2214,17 @@ impl AppService {
             .active_live_credential(live_state.environment)
             .await?;
         let current_live = self.state.lock().await.live_status.clone();
+        let reconciliation = self.load_reconciliation_cache().await?;
+        let account_snapshot = refresh_account_snapshot_from_shadow(
+            current_live.account_snapshot,
+            reconciliation.shadow.as_ref(),
+        );
         Ok(build_live_status(LiveStatusBuildInput {
             live_state,
             active_credential,
-            account_snapshot: current_live.account_snapshot,
+            account_snapshot,
             symbol_rules: current_live.symbol_rules,
-            reconciliation: self.load_reconciliation_cache().await?,
+            reconciliation,
             intent_preview: current_live.intent_preview,
             recent_preflights: self
                 .repository
@@ -4304,6 +4384,74 @@ fn account_snapshot_to_shadow(snapshot: LiveAccountSnapshot, updated_at: i64) ->
         ambiguous: false,
         divergence_reasons: Vec::new(),
     }
+}
+
+fn refresh_account_snapshot_from_shadow(
+    baseline: Option<LiveAccountSnapshot>,
+    shadow: Option<&LiveAccountShadow>,
+) -> Option<LiveAccountSnapshot> {
+    let shadow = match shadow {
+        Some(shadow) => shadow,
+        None => return baseline,
+    };
+    let mut snapshot = baseline.unwrap_or(LiveAccountSnapshot {
+        environment: shadow.environment,
+        can_trade: shadow.can_trade,
+        multi_assets_margin: shadow.multi_assets_margin,
+        position_mode: shadow.position_mode.clone(),
+        account_mode_checked_at: None,
+        total_wallet_balance: 0.0,
+        total_margin_balance: 0.0,
+        available_balance: 0.0,
+        assets: Vec::new(),
+        positions: Vec::new(),
+        fetched_at: shadow.updated_at,
+    });
+    snapshot.environment = shadow.environment;
+    snapshot.can_trade = shadow.can_trade;
+    snapshot.multi_assets_margin = shadow.multi_assets_margin;
+    snapshot.position_mode = shadow.position_mode.clone();
+    snapshot.fetched_at = shadow
+        .last_rest_sync_at
+        .or(shadow.last_event_time)
+        .unwrap_or(shadow.updated_at);
+    snapshot.assets = shadow
+        .balances
+        .iter()
+        .map(|balance| LiveAssetBalance {
+            asset: balance.asset.clone(),
+            wallet_balance: parse_shadow_number(&balance.wallet_balance),
+            available_balance: parse_shadow_number(
+                balance
+                    .cross_wallet_balance
+                    .as_deref()
+                    .unwrap_or(&balance.wallet_balance),
+            ),
+            unrealized_pnl: 0.0,
+        })
+        .collect();
+    snapshot.positions = shadow
+        .positions
+        .iter()
+        .map(|position| LivePositionSnapshot {
+            symbol: position.symbol,
+            position_side: position.position_side.clone(),
+            position_amt: parse_shadow_number(&position.position_amt),
+            entry_price: parse_shadow_number(&position.entry_price),
+            mark_price: None,
+            unrealized_pnl: parse_shadow_number(&position.unrealized_pnl),
+            leverage: snapshot
+                .positions
+                .iter()
+                .find(|existing| existing.symbol == position.symbol)
+                .and_then(|existing| existing.leverage),
+        })
+        .collect();
+    Some(snapshot)
+}
+
+fn parse_shadow_number(value: &str) -> f64 {
+    value.parse::<f64>().unwrap_or_default()
 }
 
 struct LiveStatusBuildInput<'a> {

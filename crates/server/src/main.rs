@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         ServiceOptions {
             auto_start: config.auto_start,
             enable_mainnet_canary_execution: config.enable_mainnet_canary_execution,
+            enable_testnet_drill_helpers: config.enable_testnet_drill_helpers,
             ..ServiceOptions::default()
         },
     );

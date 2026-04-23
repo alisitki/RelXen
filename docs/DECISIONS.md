@@ -81,3 +81,7 @@ RelXen repair logic intentionally queries a bounded recent order/trade window be
 ### Account mode checks use dedicated Binance endpoints
 
 Live execution gates use Binance USDⓈ-M dedicated position-mode and multi-assets-mode endpoints rather than inferring mode from account snapshots alone. Hedge mode and multi-assets mode remain unsupported and fail closed.
+
+### Soak evidence uses existing read-only APIs
+
+TESTNET soak evidence is exported by scripts that call existing REST endpoints instead of adding a privileged evidence endpoint or hidden drill trigger. This keeps the server execution surface unchanged, avoids accidental order placement from tooling, and makes real exchange evidence explicit rather than inferred from smoke exports.

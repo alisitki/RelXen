@@ -7,8 +7,8 @@ use relxen_domain::{
     AsoMode, CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
     LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
     LiveExecutionRequest, LiveKillSwitchRequest, LiveOrderSide, LiveOrderType, LiveRiskLimits,
-    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowStreamState,
-    LiveUserDataEvent, Settings, Symbol, Timeframe,
+    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
+    LiveShadowStreamState, LiveUserDataEvent, Settings, Symbol, Timeframe,
 };
 
 use support::{
@@ -188,6 +188,72 @@ async fn shadow_start_bootstraps_rest_attaches_stream_and_applies_account_update
         stopped.reconciliation.stream.state,
         LiveShadowStreamState::Stopped
     );
+}
+
+#[tokio::test]
+async fn live_status_account_snapshot_uses_fresh_shadow_positions() {
+    let exchange = arc(FakeLiveExchange::default());
+    exchange
+        .user_events
+        .lock()
+        .await
+        .push_back(Ok(LiveUserDataEvent::AccountUpdate(
+            relxen_domain::LiveAccountShadow {
+                environment: LiveEnvironment::Testnet,
+                balances: vec![LiveShadowBalance {
+                    asset: "USDT".to_string(),
+                    wallet_balance: "4999.9".to_string(),
+                    cross_wallet_balance: Some("4994.5".to_string()),
+                    balance_change: Some("0".to_string()),
+                    updated_at: relxen_app::now_ms(),
+                }],
+                positions: vec![LiveShadowPosition {
+                    symbol: Symbol::BtcUsdt,
+                    position_side: "BOTH".to_string(),
+                    position_amt: "0.0014".to_string(),
+                    entry_price: "77928.8".to_string(),
+                    unrealized_pnl: "0.2".to_string(),
+                    margin_type: None,
+                    isolated_wallet: None,
+                    updated_at: relxen_app::now_ms(),
+                }],
+                open_orders: Vec::new(),
+                can_trade: true,
+                multi_assets_margin: Some(false),
+                position_mode: Some("one_way".to_string()),
+                last_event_time: Some(relxen_app::now_ms()),
+                last_rest_sync_at: None,
+                updated_at: relxen_app::now_ms(),
+                ambiguous: false,
+                divergence_reasons: Vec::new(),
+            },
+        )));
+    let service = live_shadow_service(exchange).await;
+    create_valid_credential(&service).await;
+    service.start_live_shadow().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let has_position = service
+            .live_status()
+            .await
+            .unwrap()
+            .account_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.positions.iter().any(|position| {
+                    position.symbol == Symbol::BtcUsdt
+                        && (position.position_amt - 0.0014).abs() < f64::EPSILON
+                        && (position.entry_price - 77928.8).abs() < f64::EPSILON
+                })
+            })
+            .unwrap_or(false);
+        if has_position {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
@@ -496,6 +562,66 @@ async fn testnet_auto_executor_submits_closed_candle_signal_once() {
     assert_eq!(status.last_signal_open_time, Some(open_time));
     assert_eq!(status.last_order_id, Some(submitted[0].id.clone()));
     assert_eq!(status.blocking_reasons, Vec::<LiveBlockingReason>::new());
+}
+
+#[tokio::test]
+async fn testnet_auto_drill_helper_replays_latest_signal_once_and_suppresses_duplicate() {
+    let exchange = arc(FakeLiveExchange::default());
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service = live_shadow_service_with(
+        exchange.clone(),
+        vec![vec![Ok(event)]],
+        ServiceOptions {
+            enable_testnet_drill_helpers: true,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential(&service).await;
+    service.start_runtime().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if !service.list_signals(1).await.unwrap().is_empty() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    service.stop_runtime().await.unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .start_live_auto_executor(LiveAutoExecutorRequest {
+            confirm_testnet_auto: true,
+        })
+        .await
+        .unwrap();
+
+    let first = service.drill_replay_latest_auto_signal().await.unwrap();
+    assert_eq!(
+        first.auto_executor.state,
+        LiveAutoExecutorStateKind::Running
+    );
+
+    let submitted = exchange.submitted_orders.lock().await.clone();
+    assert_eq!(submitted.len(), 1);
+
+    let second = service.drill_replay_latest_auto_signal().await.unwrap();
+    assert_eq!(
+        second.auto_executor.state,
+        LiveAutoExecutorStateKind::Running
+    );
+    assert_eq!(
+        second.auto_executor.blocking_reasons,
+        vec![LiveBlockingReason::DuplicateSignalSuppressed]
+    );
+
+    let resubmitted = exchange.submitted_orders.lock().await.clone();
+    assert_eq!(resubmitted.len(), 1);
 }
 
 #[tokio::test]

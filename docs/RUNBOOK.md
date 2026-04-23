@@ -70,6 +70,21 @@ curl http://localhost:3000/api/live/orders
 curl http://localhost:3000/api/live/fills
 ```
 
+## Testnet Soak Evidence Capture
+
+The bounded TESTNET soak drill is documented in [TESTNET_SOAK_RUNBOOK.md](./TESTNET_SOAK_RUNBOOK.md). It should be run before any MAINNET canary review.
+
+Evidence export uses existing read-only API endpoints and writes ignored local artifacts under `artifacts/testnet-soak/<timestamp>/`:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/export_live_evidence.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/run_testnet_soak.sh
+```
+
+The guided script does not create credentials, arm execution, or place orders. It pauses while the operator performs each drill step through the UI/API and captures status, masked credential summaries, orders, fills, preflights, blocking reasons, and repair-related logs. If valid TESTNET credentials are unavailable, mark the real exchange scenarios as not exercised and keep the generated smoke/export artifacts separate from real-drill evidence.
+
+The latest go/no-go report is [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md). MAINNET canary checklist and no-go criteria are in [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md).
+
 ## Runtime States
 
 - `CONNECTED`: WebSocket deltas are flowing normally.
@@ -159,15 +174,18 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 
 ## MAINNET Canary Procedure
 
-1. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill.
-2. Stop TESTNET auto mode and engage the kill switch before changing credentials or environment.
-3. Set `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` only for the canary run, restart the backend, and verify `/api/live/status` reports canary server enablement.
-4. Select and validate a mainnet credential from OS secure storage.
-5. Configure a conservative risk profile and verify the active symbol is `BTCUSDT` or `BTCUSDC`.
-6. Start shadow sync and verify dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
-7. Build a preview, read the exact required confirmation text, and enter it only if you intend to submit that exact MAINNET order.
-8. Submit one manual canary action only. Wait for user-data/REST reconciliation before any follow-up.
-9. Disable the server canary flag after the drill and restart back into the default blocked state.
+1. Review [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md). If the current recommendation is NO-GO, do not proceed.
+2. Review [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md) and satisfy every hard precondition.
+3. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill.
+4. Stop TESTNET auto mode and engage the kill switch before changing credentials or environment.
+5. Set `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` only for the canary run, restart the backend, and verify `/api/live/status` reports canary server enablement.
+6. Select and validate a mainnet credential from OS secure storage.
+7. Configure a conservative risk profile and verify the active symbol is `BTCUSDT` or `BTCUSDC`.
+8. Start shadow sync and verify dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
+9. Build a preview, read the exact required confirmation text, and enter it only if you intend to submit that exact MAINNET order.
+10. Submit one manual canary action only. Wait for user-data/REST reconciliation before any follow-up.
+11. Export evidence immediately after the action.
+12. Disable the server canary flag after the drill and restart back into the default blocked state.
 
 ## Common Failure Notes
 

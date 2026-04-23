@@ -58,9 +58,21 @@
 - Manual MAINNET canary execution path behind `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` by default, exact confirmation text, arming, risk profile, fresh shadow/rules/account state, and all normal gates.
 - MAINNET auto-execution remains blocked.
 
+## Completed Soak/Evidence Items
+
+- Real TESTNET validation attempt reached the live API credential/status boundary and stopped honestly because no TESTNET credential metadata was available.
+- Blocked-run evidence bundle generated under `artifacts/testnet-soak/real-validation-blocked-20260423T1424Z/`.
+- Evidence export now includes masked credential summaries to make credential blockers auditable without exposing secrets.
+- Bounded TESTNET soak runbook covering credential readiness, shadow sync, preview, preflight, real TESTNET execution, cancel, flatten, kill switch, restart repair, reconnect repair, auto-executor proof, and recent-window repair limits.
+- Secret-safe evidence export script using existing read-only API endpoints.
+- Guided operator soak wrapper with checkpoint capture and no built-in order placement.
+- Mainnet canary checklist with explicit hard preconditions and no-go conditions.
+- Latest soak report template/status that distinguishes real exchange evidence from mocked/test-only evidence.
+- Git ignore policy for generated soak artifacts under `artifacts/testnet-soak/`.
+
 ## Immediate Next Task
 
-Run a documented testnet auto-execution soak drill and capture reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.
+Create/select a valid TESTNET credential through the secure-store flow, then run the real TESTNET soak drill and attach the generated evidence bundle to `docs/LATEST_TESTNET_SOAK_REPORT.md`.
 
 ## Deferred Live Execution Work
 
@@ -69,7 +81,7 @@ Run a documented testnet auto-execution soak drill and capture reconciliation, k
 - Hedge mode and multi-assets mode support if explicitly designed and tested.
 - Portfolio-level exposure controls beyond the active symbol.
 - Broker-grade audit/export reporting.
-- Automated incident drill reporting and operator attestations.
+- Automated incident drill reporting and operator attestations beyond the current soak evidence bundle.
 
 ## Not-Now Items
 

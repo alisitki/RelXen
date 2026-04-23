@@ -30,6 +30,8 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 
 - Current release status: [docs/V1_RELEASE_STATUS.md](docs/V1_RELEASE_STATUS.md)
 - Local runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
+- Testnet soak drill: [docs/TESTNET_SOAK_RUNBOOK.md](docs/TESTNET_SOAK_RUNBOOK.md)
+- Latest soak report: [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md)
 - Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Current project memory: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)
 - Post-v1 live readiness entrypoint: [docs/LIVE_READINESS.md](docs/LIVE_READINESS.md)
@@ -41,6 +43,7 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 - [Precision And Exchange Rules](docs/PRECISION_AND_EXCHANGE_RULES.md)
 - [Live Risk Controls](docs/LIVE_RISK_CONTROLS.md)
 - [Live Implementation Plan](docs/LIVE_IMPLEMENTATION_PLAN.md)
+- [Mainnet Canary Checklist](docs/MAINNET_CANARY_CHECKLIST.md)
 
 ## Live Access Status
 
@@ -49,6 +52,17 @@ The dashboard includes a `LIVE ACCESS` panel. It supports masked credential meta
 Raw API secrets are never returned by HTTP APIs and are not stored in SQLite. Normal runtime uses OS secure storage through the infra secret-store adapter; tests use in-memory stores. If the OS secure store is unavailable, paper mode remains usable and live readiness fails closed.
 
 Preflight success is reported as `PREFLIGHT PASSED`, never as an order placement. Actual placement requires a separate execute action, explicit confirmation, validated credentials, fresh shadow state, fresh rules/account snapshots, dedicated one-way and single-asset-mode checks, supported symbol/timeframe, a configured risk profile for MAINNET canary, and a non-stale preview. Real submissions request Binance `ACK` and rely on user-data stream plus bounded recent-window REST repair for final order/fill/account truth.
+
+## Testnet Soak Evidence
+
+Operational testnet evidence is captured with read-only export scripts that call the existing API surface:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/export_live_evidence.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/run_testnet_soak.sh
+```
+
+Artifacts are written under `artifacts/testnet-soak/<timestamp>/` and are ignored by git. The scripts export masked credential summaries but never raw secrets. They do not create credentials, arm execution, or place orders; the operator performs those actions through the existing UI/API gates. The latest recorded status is in [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md). If no valid TESTNET credential is available, the real exchange drill is marked not exercised rather than faked.
 
 ## Quick Start
 
@@ -132,7 +146,7 @@ Critical UI meaning is also represented textually, for example `▲ LONG`, `▼ 
 - Broad MAINNET enablement beyond the explicit manual canary gate.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - MAINNET auto-execution.
-- Full kill-switch incident workflow and soak-drill reporting beyond fail-closed blocking, cancel, and flatten controls.
+- Broader incident automation beyond the documented soak evidence workflow.
 - Tauri packaging.
 - Multi-user auth.
 - Multi-symbol concurrent runtime.

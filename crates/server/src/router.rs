@@ -69,6 +69,10 @@ pub fn build_router(state: RouterState, frontend_dist: std::path::PathBuf) -> Ro
         .route("/api/live/auto/start", post(start_live_auto))
         .route("/api/live/auto/stop", post(stop_live_auto))
         .route(
+            "/api/live/drill/auto/replay-latest-signal",
+            post(replay_latest_auto_signal_drill),
+        )
+        .route(
             "/api/live/kill-switch/engage",
             post(engage_live_kill_switch),
         )
@@ -146,6 +150,11 @@ async fn reset_paper(
 #[derive(Debug, Deserialize)]
 struct LimitQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveAutoDrillRequest {
+    confirm_testnet_drill: bool,
 }
 
 async fn list_trades(
@@ -378,6 +387,21 @@ async fn stop_live_auto(
     State(state): State<RouterState>,
 ) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
     Ok(Json(state.service.stop_live_auto_executor().await?))
+}
+
+async fn replay_latest_auto_signal_drill(
+    State(state): State<RouterState>,
+    body: Option<Json<LiveAutoDrillRequest>>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    let confirmed = body
+        .map(|Json(payload)| payload.confirm_testnet_drill)
+        .unwrap_or(false);
+    if !confirmed {
+        return Err(ApiError::from(AppError::Validation(
+            "TESTNET auto drill requires explicit confirmation.".to_string(),
+        )));
+    }
+    Ok(Json(state.service.drill_replay_latest_auto_signal().await?))
 }
 
 async fn engage_live_kill_switch(

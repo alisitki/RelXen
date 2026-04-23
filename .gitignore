@@ -4,3 +4,4 @@
 /web/dist
 /web/tsconfig.tsbuildinfo
 /.env
+/artifacts/testnet-soak

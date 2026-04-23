@@ -16,6 +16,7 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Minimum free balance after estimated fee and margin.
 - Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` and all canary gates.
 - Explicit operator-configured risk profile before MAINNET canary readiness.
+- Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session.
 
 ## Runtime Guards
 
@@ -48,6 +49,7 @@ Live runtime may start only when all are true:
 - Operator has confirmed the current environment, especially mainnet.
 - Dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
 - MAINNET canary has the server canary flag enabled and exact confirmation text for the current preview.
+- MAINNET canary review has a current TESTNET soak evidence bundle, or the operator explicitly records a NO-GO/exception decision outside normal RelXen operation.
 
 ## Stop Conditions
 
@@ -96,6 +98,7 @@ The implemented TESTNET flatten path cancels active-symbol open orders first, th
 - Clear kill-switch button and post-kill status.
 - Reconciliation status and last account snapshot age.
 - Explicit `MAINNET CANARY READY` versus `MAINNET EXECUTION BLOCKED` text.
+- Evidence/export status should distinguish smoke-only exports from real TESTNET drill evidence.
 
 ## Fail-Closed Defaults
 
