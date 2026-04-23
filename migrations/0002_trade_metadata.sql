@@ -1,0 +1,5 @@
+ALTER TABLE trades ADD COLUMN source TEXT NOT NULL DEFAULT 'signal';
+ALTER TABLE trades ADD COLUMN entry_price REAL;
+ALTER TABLE trades ADD COLUMN exit_price REAL;
+ALTER TABLE trades ADD COLUMN opened_at INTEGER;
+ALTER TABLE trades ADD COLUMN closed_at INTEGER;

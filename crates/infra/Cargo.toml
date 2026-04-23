@@ -1,0 +1,31 @@
+[package]
+name = "relxen-infra"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+hmac.workspace = true
+hex.workspace = true
+keyring.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+relxen-app = { path = "../app" }
+relxen-domain = { path = "../domain" }
+
+[dev-dependencies]
+wiremock = "0.6"

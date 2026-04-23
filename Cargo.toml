@@ -1,0 +1,47 @@
+[workspace]
+members = [
+  "crates/domain",
+  "crates/app",
+  "crates/infra",
+  "crates/server",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Codex"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["ws", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+futures = "0.3"
+hmac = "0.12"
+hex = "0.4"
+keyring = "2.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1.36", features = ["serde-with-str"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "json", "macros"] }
+sysinfo = "0.37"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
+tokio-stream = "0.1"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"

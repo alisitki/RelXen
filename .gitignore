@@ -1,0 +1,6 @@
+/target
+/var
+/web/node_modules
+/web/dist
+/web/tsconfig.tsbuildinfo
+/.env
