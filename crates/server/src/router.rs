@@ -11,8 +11,9 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use relxen_app::{AppError, AppService, OutboundEvent};
 use relxen_domain::{
-    CreateLiveCredentialRequest, DisarmLiveModeRequest, LiveCancelAllRequest, LiveCancelRequest,
-    LiveCredentialId, LiveExecutionRequest, LiveFlattenRequest, LiveOrderType,
+    CreateLiveCredentialRequest, DisarmLiveModeRequest, LiveAutoExecutorRequest,
+    LiveCancelAllRequest, LiveCancelRequest, LiveCredentialId, LiveExecutionRequest,
+    LiveFlattenRequest, LiveKillSwitchRequest, LiveOrderType, LiveRiskProfile,
     SetLiveModePreferenceRequest, Settings, UpdateLiveCredentialRequest,
 };
 use relxen_infra::EventBus;
@@ -65,6 +66,20 @@ pub fn build_router(state: RouterState, frontend_dist: std::path::PathBuf) -> Ro
         .route("/api/live/intent/preview", get(live_intent_preview))
         .route("/api/live/preflight", post(run_live_preflight))
         .route("/api/live/preflights", get(list_live_preflights))
+        .route("/api/live/auto/start", post(start_live_auto))
+        .route("/api/live/auto/stop", post(stop_live_auto))
+        .route(
+            "/api/live/kill-switch/engage",
+            post(engage_live_kill_switch),
+        )
+        .route(
+            "/api/live/kill-switch/release",
+            post(release_live_kill_switch),
+        )
+        .route(
+            "/api/live/risk-profile",
+            axum::routing::put(configure_live_risk_profile),
+        )
         .route("/api/live/execute", post(execute_live))
         .route("/api/live/orders", get(list_live_orders))
         .route("/api/live/fills", get(list_live_fills))
@@ -343,6 +358,67 @@ async fn list_live_preflights(
     ))
 }
 
+async fn start_live_auto(
+    State(state): State<RouterState>,
+    body: Option<Json<LiveAutoExecutorRequest>>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .service
+            .start_live_auto_executor(body.map(|Json(payload)| payload).unwrap_or(
+                LiveAutoExecutorRequest {
+                    confirm_testnet_auto: false,
+                },
+            ))
+            .await?,
+    ))
+}
+
+async fn stop_live_auto(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    Ok(Json(state.service.stop_live_auto_executor().await?))
+}
+
+async fn engage_live_kill_switch(
+    State(state): State<RouterState>,
+    body: Option<Json<LiveKillSwitchRequest>>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .service
+            .engage_live_kill_switch(
+                body.map(|Json(payload)| payload)
+                    .unwrap_or(LiveKillSwitchRequest { reason: None }),
+            )
+            .await?,
+    ))
+}
+
+async fn release_live_kill_switch(
+    State(state): State<RouterState>,
+    body: Option<Json<LiveKillSwitchRequest>>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .service
+            .release_live_kill_switch(
+                body.map(|Json(payload)| payload)
+                    .unwrap_or(LiveKillSwitchRequest { reason: None }),
+            )
+            .await?,
+    ))
+}
+
+async fn configure_live_risk_profile(
+    State(state): State<RouterState>,
+    Json(payload): Json<LiveRiskProfile>,
+) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
+    Ok(Json(
+        state.service.configure_live_risk_profile(payload).await?,
+    ))
+}
+
 async fn execute_live(
     State(state): State<RouterState>,
     body: Option<Json<LiveExecutionRequest>>,
@@ -354,6 +430,8 @@ async fn execute_live(
                 LiveExecutionRequest {
                     intent_id: None,
                     confirm_testnet: false,
+                    confirm_mainnet_canary: false,
+                    confirmation_text: None,
                 },
             ))
             .await?,
@@ -366,14 +444,24 @@ async fn cancel_live_order(
     body: Option<Json<LiveCancelRequest>>,
 ) -> Result<Json<relxen_domain::LiveCancelResult>, ApiError> {
     let confirm_testnet = body
+        .as_ref()
         .map(|Json(payload)| payload.confirm_testnet)
         .unwrap_or(false);
+    let confirm_mainnet_canary = body
+        .as_ref()
+        .map(|Json(payload)| payload.confirm_mainnet_canary)
+        .unwrap_or(false);
+    let confirmation_text = body
+        .map(|Json(payload)| payload.confirmation_text)
+        .unwrap_or(None);
     Ok(Json(
         state
             .service
             .cancel_live_order(LiveCancelRequest {
                 order_ref,
                 confirm_testnet,
+                confirm_mainnet_canary,
+                confirmation_text,
             })
             .await?,
     ))
@@ -389,6 +477,8 @@ async fn cancel_all_live_orders(
             .cancel_all_live_orders(body.map(|Json(payload)| payload).unwrap_or(
                 LiveCancelAllRequest {
                     confirm_testnet: false,
+                    confirm_mainnet_canary: false,
+                    confirmation_text: None,
                 },
             ))
             .await?,
@@ -405,6 +495,8 @@ async fn flatten_live_position(
             .flatten_live_position(body.map(|Json(payload)| payload).unwrap_or(
                 LiveFlattenRequest {
                     confirm_testnet: false,
+                    confirm_mainnet_canary: false,
+                    confirmation_text: None,
                 },
             ))
             .await?,

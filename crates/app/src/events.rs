@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use relxen_domain::{
-    AsoPoint, Candle, ConnectionState, LiveAccountShadow, LiveExecutionSnapshot, LiveFillRecord,
-    LiveOrderPreflightResult, LiveOrderPreview, LiveOrderRecord, LiveReconciliationStatus,
-    LiveStatusSnapshot, LogEvent, PerformanceStats, Position, Settings, SignalEvent, Symbol,
-    SystemMetrics, Trade, Wallet, ALLOWED_SYMBOLS,
+    AsoPoint, Candle, ConnectionState, LiveAccountShadow, LiveAutoExecutorStatus,
+    LiveExecutionSnapshot, LiveFillRecord, LiveKillSwitchState, LiveOrderPreflightResult,
+    LiveOrderPreview, LiveOrderRecord, LiveReconciliationStatus, LiveStatusSnapshot, LogEvent,
+    PerformanceStats, Position, Settings, SignalEvent, Symbol, SystemMetrics, Trade, Wallet,
+    ALLOWED_SYMBOLS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +73,11 @@ pub enum OutboundEvent {
     LivePreflightResultAppended(Box<LiveOrderPreflightResult>),
     LiveExecutionStateUpdated(Box<LiveExecutionSnapshot>),
     LiveExecutionBlocked { reason: String },
+    LiveKillSwitchUpdated(LiveKillSwitchState),
+    LiveAutoStateUpdated(LiveAutoExecutorStatus),
+    LiveExecutionDegraded { reason: String },
+    LiveExecutionResynced,
+    LiveMainnetGateUpdated { enabled: bool },
     LiveOrderSubmitted(Box<LiveOrderRecord>),
     LiveOrderUpdated(Box<LiveOrderRecord>),
     LiveFillAppended(Box<LiveFillRecord>),

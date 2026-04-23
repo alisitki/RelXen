@@ -372,6 +372,8 @@ pub enum LiveRuntimeState {
     PreflightReady,
     PreflightBlocked,
     TestnetExecutionReady,
+    TestnetAutoReady,
+    TestnetAutoRunning,
     TestnetSubmitPending,
     TestnetOrderOpen,
     TestnetPartiallyFilled,
@@ -381,6 +383,9 @@ pub enum LiveRuntimeState {
     ExecutionDegraded,
     ExecutionBlocked,
     MainnetExecutionBlocked,
+    MainnetCanaryReady,
+    MainnetManualExecutionEnabled,
+    KillSwitchEngaged,
     StartBlocked,
     ExecutionNotImplemented,
     Error,
@@ -409,6 +414,10 @@ pub enum LiveBlockingReason {
     MinNotional,
     PrecisionInvalid,
     MainnetExecutionBlocked,
+    MainnetCanaryDisabled,
+    MainnetCanaryRiskProfileMissing,
+    MainnetConfirmationMissing,
+    MainnetAutoBlocked,
     StaleShadowState,
     PreviewMismatch,
     ExecutionStatusUnknown,
@@ -418,6 +427,10 @@ pub enum LiveBlockingReason {
     CancelFailed,
     FlattenFailed,
     KillSwitchEngaged,
+    RiskLimitExceeded,
+    AutoExecutorStopped,
+    DuplicateSignalSuppressed,
+    RecentWindowRepairOnly,
     ExecutionNotImplemented,
 }
 
@@ -444,6 +457,10 @@ impl LiveBlockingReason {
             Self::MinNotional => "min_notional",
             Self::PrecisionInvalid => "precision_invalid",
             Self::MainnetExecutionBlocked => "mainnet_execution_blocked",
+            Self::MainnetCanaryDisabled => "mainnet_canary_disabled",
+            Self::MainnetCanaryRiskProfileMissing => "mainnet_canary_risk_profile_missing",
+            Self::MainnetConfirmationMissing => "mainnet_confirmation_missing",
+            Self::MainnetAutoBlocked => "mainnet_auto_blocked",
             Self::StaleShadowState => "stale_shadow_state",
             Self::PreviewMismatch => "preview_mismatch",
             Self::ExecutionStatusUnknown => "execution_status_unknown",
@@ -453,6 +470,10 @@ impl LiveBlockingReason {
             Self::CancelFailed => "cancel_failed",
             Self::FlattenFailed => "flatten_failed",
             Self::KillSwitchEngaged => "kill_switch_engaged",
+            Self::RiskLimitExceeded => "risk_limit_exceeded",
+            Self::AutoExecutorStopped => "auto_executor_stopped",
+            Self::DuplicateSignalSuppressed => "duplicate_signal_suppressed",
+            Self::RecentWindowRepairOnly => "recent_window_repair_only",
             Self::ExecutionNotImplemented => "execution_not_implemented",
         }
     }
@@ -509,11 +530,23 @@ pub struct LiveAccountSnapshot {
     pub environment: LiveEnvironment,
     pub can_trade: bool,
     pub multi_assets_margin: Option<bool>,
+    #[serde(default)]
+    pub position_mode: Option<String>,
+    #[serde(default)]
+    pub account_mode_checked_at: Option<i64>,
     pub total_wallet_balance: f64,
     pub total_margin_balance: f64,
     pub available_balance: f64,
     pub assets: Vec<LiveAssetBalance>,
     pub positions: Vec<LivePositionSnapshot>,
+    pub fetched_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveAccountModeStatus {
+    pub environment: LiveEnvironment,
+    pub position_mode: Option<String>,
+    pub multi_assets_margin: Option<bool>,
     pub fetched_at: i64,
 }
 
@@ -629,6 +662,12 @@ pub struct LiveShadowOrder {
     pub commission_asset: Option<String>,
     #[serde(default)]
     pub trade_id: Option<String>,
+    #[serde(default)]
+    pub self_trade_prevention_mode: Option<String>,
+    #[serde(default)]
+    pub price_match: Option<String>,
+    #[serde(default)]
+    pub expire_reason: Option<String>,
     pub last_update_time: i64,
 }
 
@@ -806,6 +845,8 @@ pub enum LiveExecutionState {
     ShadowOnly,
     PreflightReady,
     TestnetExecutionReady,
+    TestnetAutoReady,
+    TestnetAutoRunning,
     TestnetSubmitPending,
     TestnetOrderOpen,
     TestnetPartiallyFilled,
@@ -815,6 +856,9 @@ pub enum LiveExecutionState {
     ExecutionDegraded,
     ExecutionBlocked,
     MainnetExecutionBlocked,
+    MainnetCanaryReady,
+    MainnetManualExecutionEnabled,
+    KillSwitchEngaged,
     Error,
 }
 
@@ -831,6 +875,7 @@ pub enum LiveOrderStatus {
     Canceled,
     Rejected,
     Expired,
+    ExpiredInMatch,
     UnknownNeedsRepair,
 }
 
@@ -847,6 +892,7 @@ impl LiveOrderStatus {
             Self::Canceled => "canceled",
             Self::Rejected => "rejected",
             Self::Expired => "expired",
+            Self::ExpiredInMatch => "expired_in_match",
             Self::UnknownNeedsRepair => "unknown_needs_repair",
         }
     }
@@ -885,8 +931,18 @@ pub struct LiveOrderRecord {
     pub intent_id: Option<String>,
     pub intent_hash: Option<String>,
     pub source_signal_id: Option<String>,
+    #[serde(default)]
+    pub source_open_time: Option<i64>,
     pub reason: String,
     pub payload: BTreeMap<String, String>,
+    #[serde(default)]
+    pub response_type: Option<String>,
+    #[serde(default)]
+    pub self_trade_prevention_mode: Option<String>,
+    #[serde(default)]
+    pub price_match: Option<String>,
+    #[serde(default)]
+    pub expire_reason: Option<String>,
     pub last_error: Option<String>,
     pub submitted_at: i64,
     pub updated_at: i64,
@@ -921,6 +977,10 @@ pub struct LiveExecutionSnapshot {
     pub recent_orders: Vec<LiveOrderRecord>,
     pub recent_fills: Vec<LiveFillRecord>,
     pub kill_switch_engaged: bool,
+    #[serde(default)]
+    pub repair_recent_window_only: bool,
+    #[serde(default)]
+    pub mainnet_canary_enabled: bool,
     pub updated_at: i64,
 }
 
@@ -936,6 +996,8 @@ impl Default for LiveExecutionSnapshot {
             recent_orders: Vec::new(),
             recent_fills: Vec::new(),
             kill_switch_engaged: false,
+            repair_recent_window_only: true,
+            mainnet_canary_enabled: false,
             updated_at: 0,
         }
     }
@@ -945,6 +1007,10 @@ impl Default for LiveExecutionSnapshot {
 pub struct LiveExecutionRequest {
     pub intent_id: Option<String>,
     pub confirm_testnet: bool,
+    #[serde(default)]
+    pub confirm_mainnet_canary: bool,
+    #[serde(default)]
+    pub confirmation_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -960,11 +1026,19 @@ pub struct LiveExecutionResult {
 pub struct LiveCancelRequest {
     pub order_ref: String,
     pub confirm_testnet: bool,
+    #[serde(default)]
+    pub confirm_mainnet_canary: bool,
+    #[serde(default)]
+    pub confirmation_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveCancelAllRequest {
     pub confirm_testnet: bool,
+    #[serde(default)]
+    pub confirm_mainnet_canary: bool,
+    #[serde(default)]
+    pub confirmation_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -979,6 +1053,10 @@ pub struct LiveCancelResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveFlattenRequest {
     pub confirm_testnet: bool,
+    #[serde(default)]
+    pub confirm_mainnet_canary: bool,
+    #[serde(default)]
+    pub confirmation_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1040,6 +1118,154 @@ pub struct LiveOrderPreview {
     pub blocking_reasons: Vec<LiveBlockingReason>,
     pub validation_errors: Vec<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LiveKillSwitchState {
+    pub engaged: bool,
+    pub reason: Option<String>,
+    pub engaged_at: Option<i64>,
+    pub released_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveRiskLimits {
+    pub max_notional_per_order: String,
+    pub max_open_notional_active_symbol: String,
+    pub max_leverage: String,
+    pub max_orders_per_session: u64,
+    pub max_fills_per_session: u64,
+    pub max_consecutive_rejections: u64,
+    pub max_daily_realized_loss: String,
+}
+
+impl Default for LiveRiskLimits {
+    fn default() -> Self {
+        Self {
+            max_notional_per_order: "50".to_string(),
+            max_open_notional_active_symbol: "50".to_string(),
+            max_leverage: "3".to_string(),
+            max_orders_per_session: 5,
+            max_fills_per_session: 10,
+            max_consecutive_rejections: 2,
+            max_daily_realized_loss: "25".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LiveRiskProfile {
+    pub configured: bool,
+    pub profile_name: Option<String>,
+    pub limits: LiveRiskLimits,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveAutoExecutorStateKind {
+    Stopped,
+    Ready,
+    Running,
+    Blocked,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveAutoExecutorStatus {
+    pub state: LiveAutoExecutorStateKind,
+    pub environment: LiveEnvironment,
+    pub order_type: LiveOrderType,
+    pub started_at: Option<i64>,
+    pub stopped_at: Option<i64>,
+    pub last_signal_id: Option<String>,
+    pub last_signal_open_time: Option<i64>,
+    pub last_intent_hash: Option<String>,
+    pub last_order_id: Option<String>,
+    pub last_message: Option<String>,
+    pub blocking_reasons: Vec<LiveBlockingReason>,
+    pub updated_at: i64,
+}
+
+impl Default for LiveAutoExecutorStatus {
+    fn default() -> Self {
+        Self {
+            state: LiveAutoExecutorStateKind::Stopped,
+            environment: LiveEnvironment::Testnet,
+            order_type: LiveOrderType::Market,
+            started_at: None,
+            stopped_at: None,
+            last_signal_id: None,
+            last_signal_open_time: None,
+            last_intent_hash: None,
+            last_order_id: None,
+            last_message: None,
+            blocking_reasons: vec![LiveBlockingReason::AutoExecutorStopped],
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveIntentLockStatus {
+    Created,
+    Submitted,
+    Blocked,
+    Repaired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveIntentLock {
+    pub key: String,
+    pub environment: LiveEnvironment,
+    pub symbol: Symbol,
+    pub timeframe: Timeframe,
+    pub signal_id: String,
+    pub signal_open_time: i64,
+    pub signal_side: SignalSide,
+    pub intent_hash: Option<String>,
+    pub order_id: Option<String>,
+    pub status: LiveIntentLockStatus,
+    pub block_reason: Option<LiveBlockingReason>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveMainnetCanaryStatus {
+    pub enabled_by_server: bool,
+    pub risk_profile_configured: bool,
+    pub canary_ready: bool,
+    pub manual_execution_enabled: bool,
+    pub required_confirmation: Option<String>,
+    pub blocking_reasons: Vec<LiveBlockingReason>,
+    pub updated_at: i64,
+}
+
+impl Default for LiveMainnetCanaryStatus {
+    fn default() -> Self {
+        Self {
+            enabled_by_server: false,
+            risk_profile_configured: false,
+            canary_ready: false,
+            manual_execution_enabled: false,
+            required_confirmation: None,
+            blocking_reasons: vec![LiveBlockingReason::MainnetCanaryDisabled],
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveKillSwitchRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveAutoExecutorRequest {
+    pub confirm_testnet_auto: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1109,6 +1335,10 @@ pub struct LiveStatusSnapshot {
     pub recent_preflights: Vec<LiveOrderPreflightResult>,
     pub execution: LiveExecutionSnapshot,
     pub execution_availability: LiveExecutionAvailability,
+    pub kill_switch: LiveKillSwitchState,
+    pub risk_profile: LiveRiskProfile,
+    pub auto_executor: LiveAutoExecutorStatus,
+    pub mainnet_canary: LiveMainnetCanaryStatus,
     pub updated_at: i64,
 }
 
@@ -1134,6 +1364,10 @@ impl Default for LiveStatusSnapshot {
                 message: "TESTNET execution requires validated credentials and readiness gates."
                     .to_string(),
             },
+            kill_switch: LiveKillSwitchState::default(),
+            risk_profile: LiveRiskProfile::default(),
+            auto_executor: LiveAutoExecutorStatus::default(),
+            mainnet_canary: LiveMainnetCanaryStatus::default(),
             updated_at: 0,
         }
     }

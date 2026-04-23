@@ -10,6 +10,7 @@ pub struct ServerConfig {
     pub frontend_dist: PathBuf,
     pub log_level: String,
     pub auto_start: bool,
+    pub enable_mainnet_canary_execution: bool,
 }
 
 impl ServerConfig {
@@ -26,6 +27,10 @@ impl ServerConfig {
             .ok()
             .map(|value| value.eq_ignore_ascii_case("true"))
             .unwrap_or(true);
+        let enable_mainnet_canary_execution = env::var("RELXEN_ENABLE_MAINNET_CANARY_EXECUTION")
+            .ok()
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
         ensure_database_parent(&database_url)?;
 
@@ -35,6 +40,7 @@ impl ServerConfig {
             frontend_dist: PathBuf::from(frontend_dist),
             log_level,
             auto_start,
+            enable_mainnet_canary_execution,
         })
     }
 }

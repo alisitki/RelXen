@@ -8,11 +8,12 @@ use sqlx::{Row, SqlitePool};
 
 use relxen_app::{AppError, AppResult, Repository};
 use relxen_domain::{
-    Candle, LiveAccountShadow, LiveCredentialId, LiveCredentialMetadata,
+    Candle, LiveAccountShadow, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
     LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord,
-    LiveModePreference, LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus,
-    LiveStateRecord, LogEvent, Position, PositionSide, QuoteAsset, Settings, SignalEvent,
-    SignalSide, Symbol, Timeframe, Trade, TradeAction, TradeSource, Wallet,
+    LiveIntentLock, LiveKillSwitchState, LiveModePreference, LiveOrderPreflightResult,
+    LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord, LogEvent,
+    Position, PositionSide, QuoteAsset, Settings, SignalEvent, SignalSide, Symbol, Timeframe,
+    Trade, TradeAction, TradeSource, Wallet,
 };
 
 pub struct SqliteRepository {
@@ -762,6 +763,101 @@ impl Repository for SqliteRepository {
         Ok(())
     }
 
+    async fn load_live_kill_switch(&self) -> AppResult<LiveKillSwitchState> {
+        load_singleton_json(&self.pool, "live_kill_switch", "state_json")
+            .await
+            .map(|state| state.unwrap_or_default())
+    }
+
+    async fn save_live_kill_switch(&self, state: &LiveKillSwitchState) -> AppResult<()> {
+        save_singleton_json(
+            &self.pool,
+            "live_kill_switch",
+            "state_json",
+            state,
+            state.updated_at,
+        )
+        .await
+    }
+
+    async fn load_live_risk_profile(&self) -> AppResult<LiveRiskProfile> {
+        load_singleton_json(&self.pool, "live_risk_profile", "profile_json")
+            .await
+            .map(|profile| profile.unwrap_or_default())
+    }
+
+    async fn save_live_risk_profile(&self, profile: &LiveRiskProfile) -> AppResult<()> {
+        save_singleton_json(
+            &self.pool,
+            "live_risk_profile",
+            "profile_json",
+            profile,
+            profile.updated_at,
+        )
+        .await
+    }
+
+    async fn load_live_auto_executor(&self) -> AppResult<LiveAutoExecutorStatus> {
+        load_singleton_json(&self.pool, "live_auto_executor_state", "auto_json")
+            .await
+            .map(|status| status.unwrap_or_default())
+    }
+
+    async fn save_live_auto_executor(&self, status: &LiveAutoExecutorStatus) -> AppResult<()> {
+        save_singleton_json(
+            &self.pool,
+            "live_auto_executor_state",
+            "auto_json",
+            status,
+            status.updated_at,
+        )
+        .await
+    }
+
+    async fn get_live_intent_lock(&self, key: &str) -> AppResult<Option<LiveIntentLock>> {
+        sqlx::query("SELECT lock_json FROM live_intent_locks WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .context("loading live intent lock")?
+            .map(|row| {
+                serde_json::from_str::<LiveIntentLock>(row.get::<String, _>("lock_json").as_str())
+                    .context("decoding live intent lock")
+                    .map_err(AppError::from)
+            })
+            .transpose()
+    }
+
+    async fn upsert_live_intent_lock(&self, lock: &LiveIntentLock) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO live_intent_locks (
+              key, environment, symbol, timeframe, signal_open_time, status,
+              order_id, lock_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              status = excluded.status,
+              order_id = excluded.order_id,
+              lock_json = excluded.lock_json,
+              updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&lock.key)
+        .bind(lock.environment.as_str())
+        .bind(lock.symbol.as_str())
+        .bind(lock.timeframe.as_str())
+        .bind(lock.signal_open_time)
+        .bind(format!("{:?}", lock.status).to_ascii_lowercase())
+        .bind(&lock.order_id)
+        .bind(serde_json::to_string(lock).context("encoding live intent lock")?)
+        .bind(lock.created_at)
+        .bind(lock.updated_at)
+        .execute(&self.pool)
+        .await
+        .context("upserting live intent lock")?;
+        Ok(())
+    }
+
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {
         let mut rows =
             sqlx::query("SELECT order_json FROM live_orders ORDER BY updated_at DESC LIMIT ?")
@@ -878,6 +974,55 @@ impl Repository for SqliteRepository {
         .context("appending live fill")?;
         Ok(())
     }
+}
+
+async fn load_singleton_json<T>(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+) -> AppResult<Option<T>>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    let query = format!("SELECT {column} FROM {table} WHERE id = 1");
+    sqlx::query(&query)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("loading singleton json from {table}"))?
+        .map(|row| {
+            serde_json::from_str::<T>(row.get::<String, _>(column).as_str())
+                .with_context(|| format!("decoding singleton json from {table}"))
+                .map_err(AppError::from)
+        })
+        .transpose()
+}
+
+async fn save_singleton_json<T>(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    value: &T,
+    updated_at: i64,
+) -> AppResult<()>
+where
+    T: serde::Serialize,
+{
+    let query = format!(
+        r#"
+        INSERT INTO {table} (id, {column}, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          {column} = excluded.{column},
+          updated_at = excluded.updated_at
+        "#
+    );
+    sqlx::query(&query)
+        .bind(serde_json::to_string(value).context("encoding singleton json")?)
+        .bind(updated_at)
+        .execute(pool)
+        .await
+        .with_context(|| format!("saving singleton json into {table}"))?;
+    Ok(())
 }
 
 fn row_to_candle(row: sqlx::sqlite::SqliteRow) -> AppResult<Candle> {

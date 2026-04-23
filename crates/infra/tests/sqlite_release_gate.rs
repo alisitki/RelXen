@@ -14,8 +14,8 @@ use relxen_app::{
     Repository, ServiceOptions,
 };
 use relxen_domain::{
-    AsoMode, Candle, CreateLiveCredentialRequest, LiveAccountSnapshot, LiveAssetBalance,
-    LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationResult,
+    AsoMode, Candle, CreateLiveCredentialRequest, LiveAccountModeStatus, LiveAccountSnapshot,
+    LiveAssetBalance, LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationResult,
     LiveCredentialValidationStatus, LiveEnvironment, LiveOrderType, LiveSymbolFilterSummary,
     LiveSymbolRules, PositionSide, Settings, Symbol, SystemMetrics, Timeframe,
 };
@@ -115,6 +115,8 @@ impl LiveExchangePort for SqliteFakeLiveExchange {
             environment,
             can_trade: true,
             multi_assets_margin: Some(false),
+            position_mode: Some("one_way".to_string()),
+            account_mode_checked_at: Some(relxen_app::now_ms()),
             total_wallet_balance: 1000.0,
             total_margin_balance: 1000.0,
             available_balance: 900.0,
@@ -148,6 +150,19 @@ impl LiveExchangePort for SqliteFakeLiveExchange {
                 min_qty: Some(0.001),
                 min_notional: Some(100.0),
             },
+            fetched_at: relxen_app::now_ms(),
+        })
+    }
+
+    async fn fetch_account_mode(
+        &self,
+        environment: LiveEnvironment,
+        _secret: &LiveCredentialSecret,
+    ) -> AppResult<LiveAccountModeStatus> {
+        Ok(LiveAccountModeStatus {
+            environment,
+            position_mode: Some("one_way".to_string()),
+            multi_assets_margin: Some(false),
             fetched_at: relxen_app::now_ms(),
         })
     }

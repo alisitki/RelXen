@@ -48,6 +48,7 @@ async fn websocket_interruptions_can_recover_on_one_minute_with_explicit_range_q
     let anchor = recent_open_time(Timeframe::M1, 0);
     repository
         .seed_candles(&[
+            anchored_candle(Timeframe::M1, anchor, -2, 0.0, true),
             anchored_candle(Timeframe::M1, anchor, -1, 0.0, true),
             anchored_candle(Timeframe::M1, anchor, 0, 0.0, true),
         ])
@@ -75,7 +76,7 @@ async fn websocket_interruptions_can_recover_on_one_minute_with_explicit_range_q
         arc(StaticMetrics),
         publisher.clone(),
         ServiceOptions {
-            history_limit: 2,
+            history_limit: 3,
             auto_start: false,
             ..ServiceOptions::default()
         },

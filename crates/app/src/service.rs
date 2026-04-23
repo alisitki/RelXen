@@ -17,14 +17,16 @@ use relxen_domain::{
     mark_to_market, quantize_down, reset_wallets, signal_from_points, validate_settings,
     warmup_candles_required, AsoCalculator, Candle, ConnectionState, ConnectionStatus,
     CreateLiveCredentialRequest, DisarmLiveModeRequest, ExecutionMode, LiveAccountShadow,
-    LiveAccountSnapshot, LiveBlockingReason, LiveCancelAllRequest, LiveCancelRequest,
+    LiveAccountSnapshot, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
+    LiveAutoExecutorStatus, LiveBlockingReason, LiveCancelAllRequest, LiveCancelRequest,
     LiveCancelResult, LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret,
     LiveCredentialSummary, LiveCredentialValidationResult, LiveCredentialValidationStatus,
     LiveEnvironment, LiveExecutionAvailability, LiveExecutionRequest, LiveExecutionResult,
     LiveExecutionSnapshot, LiveExecutionState, LiveFillRecord, LiveFlattenRequest,
-    LiveFlattenResult, LiveGateCheck, LiveIntentInput, LiveModePreference,
-    LiveOrderPreflightResult, LiveOrderPreview, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
-    LiveOrderType, LiveReadinessSnapshot, LiveReconciliationStatus, LiveRuntimeState,
+    LiveFlattenResult, LiveGateCheck, LiveIntentInput, LiveIntentLock, LiveIntentLockStatus,
+    LiveKillSwitchRequest, LiveKillSwitchState, LiveModePreference, LiveOrderPreflightResult,
+    LiveOrderPreview, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
+    LiveReadinessSnapshot, LiveReconciliationStatus, LiveRiskProfile, LiveRuntimeState,
     LiveShadowBalance, LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState,
     LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord, LiveStatusSnapshot, LiveSymbolRules,
     LiveUserDataEvent, LiveWarning, LogEvent, PaperEngine, PerformanceStats, Position, QuoteAsset,
@@ -57,6 +59,9 @@ pub struct ServiceOptions {
     pub recent_live_order_limit: usize,
     pub recent_live_fill_limit: usize,
     pub live_intent_ttl_ms: i64,
+    pub enable_mainnet_canary_execution: bool,
+    pub live_user_stream_forced_reconnect_ms: i64,
+    pub live_repair_recent_window_limit: usize,
 }
 
 impl Default for ServiceOptions {
@@ -75,6 +80,9 @@ impl Default for ServiceOptions {
             recent_live_order_limit: 50,
             recent_live_fill_limit: 100,
             live_intent_ttl_ms: 30_000,
+            enable_mainnet_canary_execution: false,
+            live_user_stream_forced_reconnect_ms: 24 * 60 * 60 * 1_000,
+            live_repair_recent_window_limit: 100,
         }
     }
 }
@@ -292,6 +300,7 @@ impl AppService {
 
     pub async fn initialize(self: &Arc<Self>) -> AppResult<BootstrapPayload> {
         let snapshot = self.rebuild_state("bootstrap").await?;
+        let _ = self.repair_live_execution_recent_window().await;
         if self.options.auto_start {
             self.start_runtime().await?;
         }
@@ -945,10 +954,17 @@ impl AppService {
             ));
         }
 
-        let account = self
+        let mut account = self
             .live_exchange
             .fetch_account_snapshot(environment, &secret)
             .await?;
+        let account_mode = self
+            .live_exchange
+            .fetch_account_mode(environment, &secret)
+            .await?;
+        account.position_mode = account_mode.position_mode;
+        account.multi_assets_margin = account_mode.multi_assets_margin;
+        account.account_mode_checked_at = Some(account_mode.fetched_at);
         let active_symbol = self.state.lock().await.settings.active_symbol;
         let rules = self
             .live_exchange
@@ -1008,6 +1024,12 @@ impl AppService {
             .await?;
         self.publish_reconciliation(reconciliation).await;
 
+        let mut status = self.refresh_live_status_from_repository().await?;
+        status.symbol_rules = Some(rules);
+        self.store_live_status(status.clone()).await;
+        self.record_log("info", "live", "live shadow sync started".to_string())
+            .await?;
+
         let (stop_tx, stop_rx) = oneshot::channel();
         let service = Arc::clone(self);
         let join_handle = tokio::spawn(async move {
@@ -1027,11 +1049,6 @@ impl AppService {
             join_handle,
         });
 
-        let mut status = self.refresh_live_status_from_repository().await?;
-        status.symbol_rules = Some(rules);
-        self.store_live_status(status.clone()).await;
-        self.record_log("info", "live", "live shadow sync started".to_string())
-            .await?;
         Ok(status)
     }
 
@@ -1059,10 +1076,17 @@ impl AppService {
 
     pub async fn refresh_live_shadow(&self) -> AppResult<LiveStatusSnapshot> {
         let (_credential, secret, environment) = self.active_live_secret().await?;
-        let account = self
+        let mut account = self
             .live_exchange
             .fetch_account_snapshot(environment, &secret)
             .await?;
+        let account_mode = self
+            .live_exchange
+            .fetch_account_mode(environment, &secret)
+            .await?;
+        account.position_mode = account_mode.position_mode;
+        account.multi_assets_margin = account_mode.multi_assets_margin;
+        account.account_mode_checked_at = Some(account_mode.fetched_at);
         let now = now_ms();
         let mut shadow = account_snapshot_to_shadow(account, now);
         shadow.last_rest_sync_at = Some(now);
@@ -1253,48 +1277,223 @@ impl AppService {
         self.repository.list_live_fills(limit).await
     }
 
+    pub async fn repair_live_execution_recent_window(&self) -> AppResult<LiveStatusSnapshot> {
+        let (_credential, secret, environment) = match self.active_live_secret().await {
+            Ok(parts) => parts,
+            Err(_) => return self.refresh_live_status_from_repository().await,
+        };
+        let symbol = self.state.lock().await.settings.active_symbol;
+        let recent_orders = self
+            .repository
+            .list_live_orders(self.options.recent_live_order_limit)
+            .await?;
+        let mut repaired_any = false;
+        for order in recent_orders
+            .into_iter()
+            .filter(|order| order.symbol == symbol && order.status.is_open())
+            .take(self.options.live_repair_recent_window_limit)
+        {
+            info!(
+                event = "live_order_repair_started",
+                client_order_id = %order.client_order_id,
+                recent_window_only = true,
+                "repairing recent-window live order from authoritative exchange state"
+            );
+            match self
+                .live_exchange
+                .query_order(
+                    environment,
+                    &secret,
+                    order.symbol,
+                    Some(&order.client_order_id),
+                    order.exchange_order_id.as_deref(),
+                )
+                .await
+            {
+                Ok(Some(exchange_order)) => {
+                    let repaired = merge_exchange_order(order, exchange_order);
+                    self.repository.upsert_live_order(&repaired).await?;
+                    self.publish_order_and_execution(repaired, false).await?;
+                    repaired_any = true;
+                }
+                Ok(None) => {
+                    let mut unknown = order;
+                    unknown.status = LiveOrderStatus::UnknownNeedsRepair;
+                    unknown.last_error =
+                        Some("recent-window repair could not find order".to_string());
+                    unknown.updated_at = now_ms();
+                    self.repository.upsert_live_order(&unknown).await?;
+                    self.publish_order_and_execution(unknown, false).await?;
+                    repaired_any = true;
+                }
+                Err(error) => {
+                    warn!(
+                        event = "live_order_repair_finished",
+                        client_order_id = %order.client_order_id,
+                        detail = %error,
+                        "recent-window live order repair failed"
+                    );
+                }
+            }
+        }
+        if let Ok(fills) = self
+            .live_exchange
+            .list_user_trades(
+                environment,
+                &secret,
+                symbol,
+                self.options.live_repair_recent_window_limit,
+            )
+            .await
+        {
+            for fill in fills {
+                self.repository.append_live_fill(&fill).await?;
+                self.publish_fill_and_execution(fill).await?;
+                repaired_any = true;
+            }
+        }
+        let snapshot = self.refresh_live_status_from_repository().await?;
+        if repaired_any {
+            self.publisher.publish(OutboundEvent::LiveExecutionResynced);
+        }
+        Ok(snapshot)
+    }
+
+    pub async fn engage_live_kill_switch(
+        &self,
+        request: LiveKillSwitchRequest,
+    ) -> AppResult<LiveStatusSnapshot> {
+        let now = now_ms();
+        let state = LiveKillSwitchState {
+            engaged: true,
+            reason: request
+                .reason
+                .or_else(|| Some("operator_engaged".to_string())),
+            engaged_at: Some(now),
+            released_at: None,
+            updated_at: now,
+        };
+        self.repository.save_live_kill_switch(&state).await?;
+        info!(event = "kill_switch_engaged", "live kill switch engaged");
+        let snapshot = self.refresh_live_status_from_repository().await?;
+        self.publisher
+            .publish(OutboundEvent::LiveKillSwitchUpdated(state));
+        Ok(snapshot)
+    }
+
+    pub async fn release_live_kill_switch(
+        &self,
+        request: LiveKillSwitchRequest,
+    ) -> AppResult<LiveStatusSnapshot> {
+        let now = now_ms();
+        let state = LiveKillSwitchState {
+            engaged: false,
+            reason: request
+                .reason
+                .or_else(|| Some("operator_released".to_string())),
+            engaged_at: None,
+            released_at: Some(now),
+            updated_at: now,
+        };
+        self.repository.save_live_kill_switch(&state).await?;
+        info!(event = "kill_switch_released", "live kill switch released");
+        let snapshot = self.refresh_live_status_from_repository().await?;
+        self.publisher
+            .publish(OutboundEvent::LiveKillSwitchUpdated(state));
+        Ok(snapshot)
+    }
+
+    pub async fn configure_live_risk_profile(
+        &self,
+        mut profile: LiveRiskProfile,
+    ) -> AppResult<LiveStatusSnapshot> {
+        profile.configured = true;
+        profile.updated_at = now_ms();
+        self.repository.save_live_risk_profile(&profile).await?;
+        let snapshot = self.refresh_live_status_from_repository().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn start_live_auto_executor(
+        &self,
+        request: LiveAutoExecutorRequest,
+    ) -> AppResult<LiveStatusSnapshot> {
+        let now = now_ms();
+        let live_state = self.repository.load_live_state().await?;
+        let mut auto = self.repository.load_live_auto_executor().await?;
+        if live_state.environment != LiveEnvironment::Testnet {
+            auto.state = LiveAutoExecutorStateKind::Blocked;
+            auto.blocking_reasons = vec![LiveBlockingReason::MainnetAutoBlocked];
+            auto.last_message = Some("Auto execution is TESTNET-only.".to_string());
+            auto.updated_at = now;
+            self.repository.save_live_auto_executor(&auto).await?;
+            self.publisher
+                .publish(OutboundEvent::LiveAutoStateUpdated(auto.clone()));
+            return self.refresh_live_status_from_repository().await;
+        }
+        if !request.confirm_testnet_auto {
+            auto.state = LiveAutoExecutorStateKind::Blocked;
+            auto.blocking_reasons = vec![LiveBlockingReason::AutoExecutorStopped];
+            auto.last_message =
+                Some("TESTNET auto start requires explicit confirmation.".to_string());
+            auto.updated_at = now;
+            self.repository.save_live_auto_executor(&auto).await?;
+            self.publisher
+                .publish(OutboundEvent::LiveAutoStateUpdated(auto.clone()));
+            return self.refresh_live_status_from_repository().await;
+        }
+        let status = self.refresh_live_status_from_repository().await?;
+        if !status.execution.can_submit
+            && !matches!(
+                status.execution.blocking_reasons.as_slice(),
+                [LiveBlockingReason::IntentUnavailable] | []
+            )
+        {
+            auto.state = LiveAutoExecutorStateKind::Blocked;
+            auto.blocking_reasons = status.execution.blocking_reasons.clone();
+            auto.last_message = Some("Auto execution gates are blocked.".to_string());
+        } else {
+            auto.state = LiveAutoExecutorStateKind::Running;
+            auto.environment = LiveEnvironment::Testnet;
+            auto.order_type = LiveOrderType::Market;
+            auto.started_at = Some(now);
+            auto.stopped_at = None;
+            auto.blocking_reasons.clear();
+            auto.last_message = Some("TESTNET auto executor running.".to_string());
+        }
+        auto.updated_at = now;
+        self.repository.save_live_auto_executor(&auto).await?;
+        info!(event = "auto_executor_started", state = ?auto.state, "live auto executor start requested");
+        self.publisher
+            .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+        self.refresh_live_status_from_repository().await
+    }
+
+    pub async fn stop_live_auto_executor(&self) -> AppResult<LiveStatusSnapshot> {
+        let now = now_ms();
+        let mut auto = self.repository.load_live_auto_executor().await?;
+        auto.state = LiveAutoExecutorStateKind::Stopped;
+        auto.stopped_at = Some(now);
+        auto.blocking_reasons = vec![LiveBlockingReason::AutoExecutorStopped];
+        auto.last_message = Some("TESTNET auto executor stopped.".to_string());
+        auto.updated_at = now;
+        self.repository.save_live_auto_executor(&auto).await?;
+        info!(
+            event = "auto_executor_stopped",
+            "live auto executor stopped"
+        );
+        self.publisher
+            .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+        self.refresh_live_status_from_repository().await
+    }
+
     pub async fn execute_live_current_preview(
         &self,
         request: LiveExecutionRequest,
     ) -> AppResult<LiveExecutionResult> {
         let now = now_ms();
-        if !request.confirm_testnet {
-            return Ok(blocked_execution_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
-                "Execution requires explicit TESTNET confirmation.",
-                now,
-            ));
-        }
         let (credential, secret, environment) = self.active_live_secret().await?;
         let status = self.refresh_live_status_from_repository().await?;
-        if environment != LiveEnvironment::Testnet {
-            self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
-                reason: LiveBlockingReason::MainnetExecutionBlocked
-                    .as_str()
-                    .to_string(),
-            });
-            return Ok(blocked_execution_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
-                "MAINNET execution is blocked in this build.",
-                now,
-            ));
-        }
-        if !status.execution.can_submit {
-            let reason = status
-                .execution
-                .blocking_reasons
-                .first()
-                .copied()
-                .unwrap_or(LiveBlockingReason::ExecutionStatusUnknown);
-            self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
-                reason: reason.as_str().to_string(),
-            });
-            return Ok(blocked_execution_result(
-                reason,
-                &format!("TESTNET execution blocked: {}", reason.as_str()),
-                now,
-            ));
-        }
         let Some(preview) = status.intent_preview else {
             return Ok(blocked_execution_result(
                 LiveBlockingReason::IntentUnavailable,
@@ -1322,10 +1521,65 @@ impl AppService {
                 ));
             }
         }
+        if environment == LiveEnvironment::Testnet && !request.confirm_testnet {
+            return Ok(blocked_execution_result(
+                LiveBlockingReason::ExecutionStatusUnknown,
+                "Execution requires explicit TESTNET confirmation.",
+                now,
+            ));
+        }
+        if environment == LiveEnvironment::Mainnet {
+            let required = mainnet_confirmation_phrase(&intent);
+            if !self.options.enable_mainnet_canary_execution {
+                self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
+                    reason: LiveBlockingReason::MainnetCanaryDisabled
+                        .as_str()
+                        .to_string(),
+                });
+                return Ok(blocked_execution_result(
+                    LiveBlockingReason::MainnetCanaryDisabled,
+                    "MAINNET canary execution is disabled by server policy.",
+                    now,
+                ));
+            }
+            if !status.risk_profile.configured {
+                return Ok(blocked_execution_result(
+                    LiveBlockingReason::MainnetCanaryRiskProfileMissing,
+                    "MAINNET canary requires an explicit operator-configured risk profile.",
+                    now,
+                ));
+            }
+            if !request.confirm_mainnet_canary
+                || request.confirmation_text.as_deref() != Some(required.as_str())
+            {
+                return Ok(blocked_execution_result(
+                    LiveBlockingReason::MainnetConfirmationMissing,
+                    &format!("MAINNET canary requires exact confirmation: {required}"),
+                    now,
+                ));
+            }
+        }
+        if !status.execution.can_submit {
+            let reason = status
+                .execution
+                .blocking_reasons
+                .first()
+                .copied()
+                .unwrap_or(LiveBlockingReason::ExecutionStatusUnknown);
+            self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
+                reason: reason.as_str().to_string(),
+            });
+            return Ok(blocked_execution_result(
+                reason,
+                &format!("{} execution blocked: {}", environment, reason.as_str()),
+                now,
+            ));
+        }
 
         let client_order_id = client_order_id("rx_exec");
         let mut payload = intent.exchange_payload.clone();
         payload.insert("newClientOrderId".to_string(), client_order_id.clone());
+        payload.insert("newOrderRespType".to_string(), "ACK".to_string());
         if intent.reduce_only {
             payload.insert("reduceOnly".to_string(), "true".to_string());
         }
@@ -1349,8 +1603,13 @@ impl AppService {
             intent_id: Some(intent.id.clone()),
             intent_hash: Some(intent.intent_hash.clone()),
             source_signal_id: intent.source_signal_id.clone(),
+            source_open_time: intent.source_open_time,
             reason: intent.reason.clone(),
             payload: payload.clone(),
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: None,
+            price_match: None,
+            expire_reason: None,
             last_error: None,
             submitted_at: now,
             updated_at: now,
@@ -1373,7 +1632,7 @@ impl AppService {
             .await
         {
             Ok(exchange_order) => {
-                local_order = merge_exchange_order(local_order, exchange_order);
+                local_order = merge_exchange_ack(local_order, exchange_order);
                 self.repository.upsert_live_order(&local_order).await?;
                 self.publish_order_and_execution(local_order.clone(), false)
                     .await?;
@@ -1382,14 +1641,14 @@ impl AppService {
                     client_order_id = %local_order.client_order_id,
                     exchange_order_id = ?local_order.exchange_order_id,
                     status = %local_order.status.as_str(),
-                    "Binance testnet acknowledged order submission"
+                    "Binance acknowledged order submission; lifecycle waits for authoritative reconciliation"
                 );
                 Ok(LiveExecutionResult {
                     accepted: true,
                     order: Some(local_order),
                     blocking_reason: None,
                     message:
-                        "TESTNET order submitted. Final lifecycle waits for exchange reconciliation."
+                        "Order submitted with ACK handling. Final lifecycle waits for authoritative exchange reconciliation."
                             .to_string(),
                     created_at: now_ms(),
                 })
@@ -1462,18 +1721,11 @@ impl AppService {
         request: LiveCancelRequest,
     ) -> AppResult<LiveCancelResult> {
         let now = now_ms();
-        if !request.confirm_testnet {
-            return Ok(blocked_cancel_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
-                "Cancel requires explicit TESTNET confirmation.",
-                now,
-            ));
-        }
         let (_credential, secret, environment) = self.active_live_secret().await?;
-        if environment != LiveEnvironment::Testnet {
+        if environment == LiveEnvironment::Testnet && !request.confirm_testnet {
             return Ok(blocked_cancel_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
-                "MAINNET cancel execution is blocked in this build.",
+                LiveBlockingReason::ExecutionStatusUnknown,
+                "Cancel requires explicit TESTNET confirmation.",
                 now,
             ));
         }
@@ -1484,6 +1736,25 @@ impl AppService {
             .ok_or_else(|| {
                 AppError::NotFound(format!("live order not found: {}", request.order_ref))
             })?;
+        if environment == LiveEnvironment::Mainnet {
+            let required = format!("CANCEL MAINNET {} {}", order.symbol, order.client_order_id);
+            if !self.options.enable_mainnet_canary_execution {
+                return Ok(blocked_cancel_result(
+                    LiveBlockingReason::MainnetCanaryDisabled,
+                    "MAINNET canary cancel is disabled by server policy.",
+                    now,
+                ));
+            }
+            if !request.confirm_mainnet_canary
+                || request.confirmation_text.as_deref() != Some(required.as_str())
+            {
+                return Ok(blocked_cancel_result(
+                    LiveBlockingReason::MainnetConfirmationMissing,
+                    &format!("MAINNET canary cancel requires exact confirmation: {required}"),
+                    now,
+                ));
+            }
+        }
         order.status = LiveOrderStatus::CancelPending;
         order.updated_at = now;
         self.repository.upsert_live_order(&order).await?;
@@ -1555,12 +1826,33 @@ impl AppService {
         &self,
         request: LiveCancelAllRequest,
     ) -> AppResult<Vec<LiveCancelResult>> {
-        if !request.confirm_testnet {
+        let live_state = self.repository.load_live_state().await?;
+        if live_state.environment == LiveEnvironment::Testnet && !request.confirm_testnet {
             return Ok(vec![blocked_cancel_result(
                 LiveBlockingReason::ExecutionStatusUnknown,
                 "TESTNET cancel-all requires explicit confirmation.",
                 now_ms(),
             )]);
+        }
+        if live_state.environment == LiveEnvironment::Mainnet {
+            let symbol = self.state.lock().await.settings.active_symbol;
+            let required = format!("CANCEL ALL MAINNET {symbol}");
+            if !self.options.enable_mainnet_canary_execution {
+                return Ok(vec![blocked_cancel_result(
+                    LiveBlockingReason::MainnetCanaryDisabled,
+                    "MAINNET canary cancel-all is disabled by server policy.",
+                    now_ms(),
+                )]);
+            }
+            if !request.confirm_mainnet_canary
+                || request.confirmation_text.as_deref() != Some(required.as_str())
+            {
+                return Ok(vec![blocked_cancel_result(
+                    LiveBlockingReason::MainnetConfirmationMissing,
+                    &format!("MAINNET canary cancel-all requires exact confirmation: {required}"),
+                    now_ms(),
+                )]);
+            }
         }
         let symbol = self.state.lock().await.settings.active_symbol;
         let orders = self
@@ -1576,7 +1868,12 @@ impl AppService {
             results.push(
                 self.cancel_live_order(LiveCancelRequest {
                     order_ref: order.id,
-                    confirm_testnet: true,
+                    confirm_testnet: request.confirm_testnet,
+                    confirm_mainnet_canary: request.confirm_mainnet_canary,
+                    confirmation_text: Some(format!(
+                        "CANCEL MAINNET {} {}",
+                        order.symbol, order.client_order_id
+                    )),
                 })
                 .await?,
             );
@@ -1589,20 +1886,33 @@ impl AppService {
         request: LiveFlattenRequest,
     ) -> AppResult<LiveFlattenResult> {
         let now = now_ms();
-        if !request.confirm_testnet {
+        let (credential, secret, environment) = self.active_live_secret().await?;
+        if environment == LiveEnvironment::Testnet && !request.confirm_testnet {
             return Ok(blocked_flatten_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
+                LiveBlockingReason::ExecutionStatusUnknown,
                 "Flatten requires explicit TESTNET confirmation.",
                 now,
             ));
         }
-        let (credential, secret, environment) = self.active_live_secret().await?;
-        if environment != LiveEnvironment::Testnet {
-            return Ok(blocked_flatten_result(
-                LiveBlockingReason::MainnetExecutionBlocked,
-                "MAINNET flatten is blocked in this build.",
-                now,
-            ));
+        let active_symbol = self.state.lock().await.settings.active_symbol;
+        if environment == LiveEnvironment::Mainnet {
+            let required = format!("FLATTEN MAINNET {active_symbol}");
+            if !self.options.enable_mainnet_canary_execution {
+                return Ok(blocked_flatten_result(
+                    LiveBlockingReason::MainnetCanaryDisabled,
+                    "MAINNET canary flatten is disabled by server policy.",
+                    now,
+                ));
+            }
+            if !request.confirm_mainnet_canary
+                || request.confirmation_text.as_deref() != Some(required.as_str())
+            {
+                return Ok(blocked_flatten_result(
+                    LiveBlockingReason::MainnetConfirmationMissing,
+                    &format!("MAINNET canary flatten requires exact confirmation: {required}"),
+                    now,
+                ));
+            }
         }
         let status = self.refresh_live_status_from_repository().await?;
         if status.execution.blocking_reasons.iter().any(|reason| {
@@ -1619,7 +1929,6 @@ impl AppService {
                 now,
             ));
         }
-        let active_symbol = self.state.lock().await.settings.active_symbol;
         let Some(shadow) = status.reconciliation.shadow.clone() else {
             return Ok(blocked_flatten_result(
                 LiveBlockingReason::AccountSnapshotMissing,
@@ -1687,7 +1996,9 @@ impl AppService {
         );
         let canceled = self
             .cancel_all_live_orders(LiveCancelAllRequest {
-                confirm_testnet: true,
+                confirm_testnet: request.confirm_testnet,
+                confirm_mainnet_canary: request.confirm_mainnet_canary,
+                confirmation_text: Some(format!("CANCEL ALL MAINNET {active_symbol}")),
             })
             .await?;
         let client_order_id = client_order_id("rx_flat");
@@ -1698,6 +2009,7 @@ impl AppService {
         payload.insert("quantity".to_string(), decimal_to_exchange_string(quantity));
         payload.insert("reduceOnly".to_string(), "true".to_string());
         payload.insert("newClientOrderId".to_string(), client_order_id.clone());
+        payload.insert("newOrderRespType".to_string(), "ACK".to_string());
         let local_order = LiveOrderRecord {
             id: client_order_id.clone(),
             credential_id: Some(credential.id),
@@ -1720,8 +2032,13 @@ impl AppService {
             intent_id: None,
             intent_hash: None,
             source_signal_id: None,
+            source_open_time: None,
             reason: "manual_flatten".to_string(),
             payload: payload.clone(),
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: None,
+            price_match: None,
+            expire_reason: None,
             last_error: None,
             submitted_at: now,
             updated_at: now,
@@ -1735,7 +2052,7 @@ impl AppService {
             .await
         {
             Ok(exchange_order) => {
-                let order = merge_exchange_order(local_order, exchange_order);
+                let order = merge_exchange_ack(local_order, exchange_order);
                 self.repository.upsert_live_order(&order).await?;
                 self.publish_order_and_execution(order.clone(), false)
                     .await?;
@@ -1835,6 +2152,9 @@ impl AppService {
                 .await
                 .unwrap_or_default(),
             execution: self.load_execution_cache().await?,
+            kill_switch: self.repository.load_live_kill_switch().await?,
+            risk_profile: self.repository.load_live_risk_profile().await?,
+            auto_executor: self.repository.load_live_auto_executor().await?,
             paper_position_open: self.current_paper_position_open().await,
             extra_blocking: Vec::new(),
             now_ms: now_ms(),
@@ -1870,6 +2190,9 @@ impl AppService {
             .list_live_fills(self.options.recent_live_fill_limit)
             .await
             .unwrap_or_default();
+        execution.repair_recent_window_only = true;
+        execution.mainnet_canary_enabled = self.options.enable_mainnet_canary_execution;
+        execution.kill_switch_engaged = self.repository.load_live_kill_switch().await?.engaged;
         execution.active_order = execution
             .recent_orders
             .iter()
@@ -2014,6 +2337,7 @@ impl AppService {
             source_signal_id: existing
                 .as_ref()
                 .and_then(|record| record.source_signal_id.clone()),
+            source_open_time: existing.as_ref().and_then(|record| record.source_open_time),
             reason: existing
                 .as_ref()
                 .map(|record| record.reason.clone())
@@ -2022,6 +2346,12 @@ impl AppService {
                 .as_ref()
                 .map(|record| record.payload.clone())
                 .unwrap_or_default(),
+            response_type: existing
+                .as_ref()
+                .and_then(|record| record.response_type.clone()),
+            self_trade_prevention_mode: order.self_trade_prevention_mode.clone(),
+            price_match: order.price_match.clone(),
+            expire_reason: order.expire_reason.clone(),
             last_error: None,
             submitted_at: existing
                 .as_ref()
@@ -2057,16 +2387,56 @@ impl AppService {
         Ok(())
     }
 
+    async fn repair_live_shadow_from_rest(
+        &self,
+        environment: LiveEnvironment,
+        secret: &LiveCredentialSecret,
+    ) -> AppResult<()> {
+        let mut account = self
+            .live_exchange
+            .fetch_account_snapshot(environment, secret)
+            .await?;
+        let account_mode = self
+            .live_exchange
+            .fetch_account_mode(environment, secret)
+            .await?;
+        account.position_mode = account_mode.position_mode;
+        account.multi_assets_margin = account_mode.multi_assets_margin;
+        account.account_mode_checked_at = Some(account_mode.fetched_at);
+        let now = now_ms();
+        let mut shadow = account_snapshot_to_shadow(account, now);
+        shadow.last_rest_sync_at = Some(now);
+        shadow.ambiguous = false;
+        shadow.divergence_reasons.clear();
+        self.repository.save_live_shadow(&shadow).await?;
+        let mut reconciliation = self.load_reconciliation_cache().await?;
+        reconciliation.state = LiveRuntimeState::ShadowRunning;
+        reconciliation.shadow = Some(shadow);
+        reconciliation.stream.state = LiveShadowStreamState::Running;
+        reconciliation.stream.last_rest_sync_at = Some(now);
+        reconciliation.stream.stale = false;
+        reconciliation.blocking_reasons.clear();
+        reconciliation.updated_at = now;
+        self.repository
+            .save_live_reconciliation(&reconciliation)
+            .await?;
+        self.publish_reconciliation(reconciliation).await;
+        Ok(())
+    }
+
     async fn run_live_shadow_loop(
         self: Arc<Self>,
         mut stop_rx: oneshot::Receiver<()>,
         environment: LiveEnvironment,
         _credential_id: LiveCredentialId,
         secret: LiveCredentialSecret,
-        listen_key: String,
+        mut listen_key: String,
         mut stream: crate::ports::LiveUserDataStream,
     ) {
         let mut keepalive_interval = interval(Duration::from_secs(30 * 60));
+        let mut forced_reconnect = Box::pin(sleep(Duration::from_millis(
+            self.options.live_user_stream_forced_reconnect_ms.max(1) as u64,
+        )));
         loop {
             tokio::select! {
                 _ = &mut stop_rx => {
@@ -2078,6 +2448,60 @@ impl AppService {
                     if let Err(error) = self.live_exchange.keepalive_listen_key(environment, &secret, &listen_key).await {
                         warn!(event = "listen_key_keepalive_failed", detail = %error, "listenKey keepalive failed");
                         self.degrade_live_shadow(format!("listenKey keepalive failed: {error}")).await;
+                    }
+                }
+                _ = &mut forced_reconnect => {
+                    info!(
+                        event = "live_shadow_forced_reconnect_started",
+                        environment = %environment,
+                        "forcing user-data stream reconnect before 24-hour websocket limit"
+                    );
+                    if let Err(error) = self.repair_live_shadow_from_rest(environment, &secret).await {
+                        warn!(
+                            event = "live_shadow_degraded",
+                            detail = %error,
+                            "forced reconnect REST repair failed"
+                        );
+                        self.degrade_live_shadow(format!("forced user-data reconnect repair failed: {error}")).await;
+                        break;
+                    }
+                    let _ = self.live_exchange.close_listen_key(environment, &secret, &listen_key).await;
+                    match self.live_exchange.create_listen_key(environment, &secret).await {
+                        Ok(new_listen_key) => {
+                            match self.live_exchange.subscribe_user_data(environment, &new_listen_key).await {
+                                Ok(new_stream) => {
+                                    listen_key = new_listen_key;
+                                    stream = new_stream;
+                                    keepalive_interval = interval(Duration::from_secs(30 * 60));
+                                    forced_reconnect = Box::pin(sleep(Duration::from_millis(
+                                        self.options.live_user_stream_forced_reconnect_ms.max(1) as u64,
+                                    )));
+                                    let mut reconciliation = self.load_reconciliation_cache().await.unwrap_or_default();
+                                    reconciliation.stream.listen_key_hint = Some(mask_listen_key(&listen_key));
+                                    reconciliation.stream.state = LiveShadowStreamState::Running;
+                                    reconciliation.stream.status_since = now_ms();
+                                    reconciliation.stream.reconnect_attempts = reconciliation.stream.reconnect_attempts.saturating_add(1);
+                                    reconciliation.stream.detail = Some("forced 24h user-data reconnect completed".to_string());
+                                    reconciliation.updated_at = now_ms();
+                                    let _ = self.repository.save_live_reconciliation(&reconciliation).await;
+                                    self.publish_reconciliation(reconciliation).await;
+                                    let _ = self.refresh_live_status_from_repository().await;
+                                    info!(
+                                        event = "live_shadow_reconnected",
+                                        environment = %environment,
+                                        "forced user-data stream reconnect and REST repair completed"
+                                    );
+                                }
+                                Err(error) => {
+                                    self.degrade_live_shadow(format!("forced user-data reconnect subscribe failed: {error}")).await;
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            self.degrade_live_shadow(format!("forced user-data reconnect listenKey create failed: {error}")).await;
+                            break;
+                        }
                     }
                 }
                 event = stream.next() => {
@@ -2145,7 +2569,7 @@ impl AppService {
                     .retain(|item| item.order_id != order.order_id);
                 if !matches!(
                     order.status.as_str(),
-                    "FILLED" | "CANCELED" | "REJECTED" | "EXPIRED"
+                    "FILLED" | "CANCELED" | "REJECTED" | "EXPIRED" | "EXPIRED_IN_MATCH"
                 ) {
                     shadow.open_orders.push(order);
                 }
@@ -2225,6 +2649,9 @@ impl AppService {
             .active_live_credential(live_state.environment)
             .await?;
         let paper_position_open = self.current_paper_position_open().await;
+        let kill_switch = self.repository.load_live_kill_switch().await?;
+        let risk_profile = self.repository.load_live_risk_profile().await?;
+        let auto_executor = self.repository.load_live_auto_executor().await?;
         let mut extra_blocking = Vec::new();
         let mut account_snapshot = None;
         let mut symbol_rules = None;
@@ -2243,6 +2670,9 @@ impl AppService {
                     .await
                     .unwrap_or_default(),
                 execution: self.load_execution_cache().await?,
+                kill_switch: kill_switch.clone(),
+                risk_profile: risk_profile.clone(),
+                auto_executor: auto_executor.clone(),
                 paper_position_open,
                 extra_blocking: vec![LiveBlockingReason::NoActiveCredential],
                 now_ms: now_ms(),
@@ -2271,6 +2701,9 @@ impl AppService {
                     .await
                     .unwrap_or_default(),
                 execution: self.load_execution_cache().await?,
+                kill_switch: kill_switch.clone(),
+                risk_profile: risk_profile.clone(),
+                auto_executor: auto_executor.clone(),
                 paper_position_open,
                 extra_blocking,
                 now_ms: now_ms(),
@@ -2300,6 +2733,9 @@ impl AppService {
                             .await
                             .unwrap_or_default(),
                         execution: self.load_execution_cache().await?,
+                        kill_switch: kill_switch.clone(),
+                        risk_profile: risk_profile.clone(),
+                        auto_executor: auto_executor.clone(),
                         paper_position_open,
                         extra_blocking,
                         now_ms: now_ms(),
@@ -2329,7 +2765,28 @@ impl AppService {
                 .fetch_account_snapshot(live_state.environment, &secret)
                 .await
             {
-                Ok(snapshot) => account_snapshot = Some(snapshot),
+                Ok(mut snapshot) => {
+                    match self
+                        .live_exchange
+                        .fetch_account_mode(live_state.environment, &secret)
+                        .await
+                    {
+                        Ok(mode) => {
+                            snapshot.position_mode = mode.position_mode;
+                            snapshot.multi_assets_margin = mode.multi_assets_margin;
+                            snapshot.account_mode_checked_at = Some(mode.fetched_at);
+                        }
+                        Err(error) => {
+                            warn!(
+                                event = "live_readiness_refreshed",
+                                detail = %error,
+                                "dedicated account mode check failed during live readiness refresh"
+                            );
+                            extra_blocking.push(LiveBlockingReason::UnsupportedAccountMode);
+                        }
+                    }
+                    account_snapshot = Some(snapshot);
+                }
                 Err(error) => {
                     warn!(
                         event = "live_readiness_refreshed",
@@ -2365,6 +2822,9 @@ impl AppService {
                 .await
                 .unwrap_or_default(),
             execution: self.load_execution_cache().await?,
+            kill_switch,
+            risk_profile,
+            auto_executor,
             paper_position_open,
             extra_blocking,
             now_ms: now_ms(),
@@ -3050,6 +3510,165 @@ impl AppService {
         })
     }
 
+    async fn maybe_auto_execute_signal(
+        &self,
+        signal: SignalEvent,
+        reference_price: f64,
+    ) -> AppResult<()> {
+        let mut auto = self.repository.load_live_auto_executor().await?;
+        if auto.state != LiveAutoExecutorStateKind::Running {
+            return Ok(());
+        }
+        let live_state = self.repository.load_live_state().await?;
+        if live_state.environment != LiveEnvironment::Testnet {
+            auto.state = LiveAutoExecutorStateKind::Blocked;
+            auto.blocking_reasons = vec![LiveBlockingReason::MainnetAutoBlocked];
+            auto.last_message = Some("Auto execution is TESTNET-only.".to_string());
+            auto.updated_at = now_ms();
+            self.repository.save_live_auto_executor(&auto).await?;
+            self.publisher
+                .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+            let _ = self.refresh_live_status_from_repository().await;
+            return Ok(());
+        }
+
+        let settings = self.state.lock().await.settings.clone();
+        let lock_key = format!(
+            "{}:{}:{}:{}:{:?}",
+            live_state.environment, signal.symbol, signal.timeframe, signal.open_time, signal.side
+        );
+        if self
+            .repository
+            .get_live_intent_lock(&lock_key)
+            .await?
+            .is_some()
+        {
+            auto.last_signal_id = Some(signal.id.clone());
+            auto.last_signal_open_time = Some(signal.open_time);
+            auto.last_message = Some("Duplicate closed-candle signal suppressed.".to_string());
+            auto.blocking_reasons = vec![LiveBlockingReason::DuplicateSignalSuppressed];
+            auto.updated_at = now_ms();
+            self.repository.save_live_auto_executor(&auto).await?;
+            self.publisher
+                .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+            let _ = self.refresh_live_status_from_repository().await;
+            info!(
+                event = "auto_signal_blocked",
+                signal_id = %signal.id,
+                reason = %LiveBlockingReason::DuplicateSignalSuppressed.as_str(),
+                "duplicate live auto signal suppressed"
+            );
+            return Ok(());
+        }
+
+        let now = now_ms();
+        let mut lock = LiveIntentLock {
+            key: lock_key,
+            environment: live_state.environment,
+            symbol: signal.symbol,
+            timeframe: signal.timeframe,
+            signal_id: signal.id.clone(),
+            signal_open_time: signal.open_time,
+            signal_side: signal.side,
+            intent_hash: None,
+            order_id: None,
+            status: LiveIntentLockStatus::Created,
+            block_reason: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.repository.upsert_live_intent_lock(&lock).await?;
+
+        let status = self.refresh_live_status_from_repository().await?;
+        let Some(rules) = status.symbol_rules.clone() else {
+            lock.status = LiveIntentLockStatus::Blocked;
+            lock.block_reason = Some(LiveBlockingReason::SymbolRulesMissing);
+            lock.updated_at = now_ms();
+            self.repository.upsert_live_intent_lock(&lock).await?;
+            return Ok(());
+        };
+        let Some(shadow) = status.reconciliation.shadow.clone() else {
+            lock.status = LiveIntentLockStatus::Blocked;
+            lock.block_reason = Some(LiveBlockingReason::ShadowStateAmbiguous);
+            lock.updated_at = now_ms();
+            self.repository.upsert_live_intent_lock(&lock).await?;
+            return Ok(());
+        };
+        let preview = build_live_order_preview(LiveIntentInput {
+            environment: live_state.environment,
+            symbol: settings.active_symbol,
+            settings,
+            rules,
+            shadow,
+            latest_signal: Some(signal.clone()),
+            order_type: auto.order_type,
+            reference_price: Decimal::from_str(&reference_price.to_string())
+                .unwrap_or(Decimal::ZERO),
+            limit_price: None,
+            now_ms: now_ms(),
+        });
+        {
+            let mut state = self.state.lock().await;
+            state.live_status.intent_preview = Some(preview.clone());
+            state.live_status.updated_at = now_ms();
+        }
+        self.publisher
+            .publish(OutboundEvent::LiveIntentPreviewUpdated(Box::new(
+                preview.clone(),
+            )));
+        let Some(intent) = preview.intent.as_ref() else {
+            lock.status = LiveIntentLockStatus::Blocked;
+            lock.block_reason = preview.blocking_reasons.first().copied();
+            lock.updated_at = now_ms();
+            self.repository.upsert_live_intent_lock(&lock).await?;
+            auto.last_message = Some("Auto signal blocked during intent build.".to_string());
+            auto.blocking_reasons = preview.blocking_reasons.clone();
+            auto.updated_at = now_ms();
+            self.repository.save_live_auto_executor(&auto).await?;
+            self.publisher
+                .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+            let _ = self.refresh_live_status_from_repository().await;
+            return Ok(());
+        };
+        lock.intent_hash = Some(intent.intent_hash.clone());
+        let result = self
+            .execute_live_current_preview(LiveExecutionRequest {
+                intent_id: Some(intent.id.clone()),
+                confirm_testnet: true,
+                confirm_mainnet_canary: false,
+                confirmation_text: None,
+            })
+            .await?;
+        if let Some(order) = result.order.as_ref() {
+            lock.order_id = Some(order.id.clone());
+        }
+        lock.status = if result.accepted {
+            LiveIntentLockStatus::Submitted
+        } else {
+            LiveIntentLockStatus::Blocked
+        };
+        lock.block_reason = result.blocking_reason;
+        lock.updated_at = now_ms();
+        self.repository.upsert_live_intent_lock(&lock).await?;
+        auto.last_signal_id = Some(signal.id.clone());
+        auto.last_signal_open_time = Some(signal.open_time);
+        auto.last_intent_hash = Some(intent.intent_hash.clone());
+        auto.last_order_id = result.order.as_ref().map(|order| order.id.clone());
+        auto.last_message = Some(result.message);
+        auto.blocking_reasons = result.blocking_reason.into_iter().collect();
+        auto.updated_at = now_ms();
+        self.repository.save_live_auto_executor(&auto).await?;
+        self.publisher
+            .publish(OutboundEvent::LiveAutoStateUpdated(auto));
+        let _ = self.refresh_live_status_from_repository().await;
+        info!(
+            event = if result.accepted { "auto_signal_submitted" } else { "auto_signal_blocked" },
+            signal_id = %signal.id,
+            "closed-candle signal processed by TESTNET auto executor"
+        );
+        Ok(())
+    }
+
     async fn process_market_event(
         &self,
         event: MarketStreamEvent,
@@ -3185,6 +3804,9 @@ impl AppService {
         }
         if let Some(signal) = persist_signal.as_ref() {
             self.repository.append_signal(signal).await?;
+            let _ = self
+                .maybe_auto_execute_signal(signal.clone(), event.candle.close)
+                .await;
         }
         while let Some(trade) = new_trades.pop_front() {
             self.repository.append_trade(&trade).await?;
@@ -3399,6 +4021,81 @@ fn blocked_flatten_result(
     }
 }
 
+fn mainnet_confirmation_phrase(intent: &relxen_domain::LiveOrderIntent) -> String {
+    match (intent.order_type, intent.price.as_deref()) {
+        (LiveOrderType::Limit, Some(price)) => format!(
+            "SUBMIT MAINNET {} LIMIT {} {} @ {}",
+            intent.side.as_binance(),
+            intent.symbol,
+            intent.quantity,
+            price
+        ),
+        _ => format!(
+            "SUBMIT MAINNET {} MARKET {} {}",
+            intent.side.as_binance(),
+            intent.symbol,
+            intent.quantity
+        ),
+    }
+}
+
+fn build_mainnet_canary_status(
+    environment: LiveEnvironment,
+    enabled_by_server: bool,
+    risk_profile: &LiveRiskProfile,
+    execution: &LiveExecutionSnapshot,
+    intent_preview: Option<&LiveOrderPreview>,
+    updated_at: i64,
+) -> relxen_domain::LiveMainnetCanaryStatus {
+    let mut blocking_reasons = Vec::new();
+    if environment != LiveEnvironment::Mainnet {
+        blocking_reasons.push(LiveBlockingReason::MainnetExecutionBlocked);
+    }
+    if !enabled_by_server {
+        blocking_reasons.push(LiveBlockingReason::MainnetCanaryDisabled);
+    }
+    if !risk_profile.configured {
+        blocking_reasons.push(LiveBlockingReason::MainnetCanaryRiskProfileMissing);
+    }
+    for reason in &execution.blocking_reasons {
+        if !blocking_reasons.contains(reason) {
+            blocking_reasons.push(*reason);
+        }
+    }
+    let required_confirmation = intent_preview
+        .and_then(|preview| preview.intent.as_ref())
+        .filter(|intent| intent.environment == LiveEnvironment::Mainnet)
+        .map(mainnet_confirmation_phrase);
+    let canary_ready = environment == LiveEnvironment::Mainnet
+        && enabled_by_server
+        && risk_profile.configured
+        && execution.can_submit
+        && required_confirmation.is_some();
+    relxen_domain::LiveMainnetCanaryStatus {
+        enabled_by_server,
+        risk_profile_configured: risk_profile.configured,
+        canary_ready,
+        manual_execution_enabled: canary_ready,
+        required_confirmation,
+        blocking_reasons,
+        updated_at,
+    }
+}
+
+fn intent_exceeds_risk_limits(
+    intent: &relxen_domain::LiveOrderIntent,
+    risk_profile: &LiveRiskProfile,
+) -> bool {
+    let notional = Decimal::from_str(&intent.sizing.estimated_notional).unwrap_or(Decimal::ZERO);
+    let max_notional =
+        Decimal::from_str(&risk_profile.limits.max_notional_per_order).unwrap_or(Decimal::ZERO);
+    let leverage = Decimal::from_str(&intent.sizing.leverage).unwrap_or(Decimal::ZERO);
+    let max_leverage =
+        Decimal::from_str(&risk_profile.limits.max_leverage).unwrap_or(Decimal::ZERO);
+    (max_notional > Decimal::ZERO && notional > max_notional)
+        || (max_leverage > Decimal::ZERO && leverage > max_leverage)
+}
+
 fn client_order_id(prefix: &str) -> String {
     let raw = Uuid::new_v4().simple().to_string();
     format!("{prefix}_{}", &raw[..24])
@@ -3417,6 +4114,21 @@ fn merge_exchange_order(mut local: LiveOrderRecord, exchange: LiveOrderRecord) -
     local.avg_price = exchange.avg_price.or(local.avg_price);
     local.reduce_only = exchange.reduce_only || local.reduce_only;
     local.time_in_force = exchange.time_in_force.or(local.time_in_force);
+    local.self_trade_prevention_mode = exchange.self_trade_prevention_mode;
+    local.price_match = exchange.price_match;
+    local.expire_reason = exchange.expire_reason;
+    local.updated_at = exchange.updated_at.max(now_ms());
+    local.last_error = None;
+    local
+}
+
+fn merge_exchange_ack(mut local: LiveOrderRecord, exchange: LiveOrderRecord) -> LiveOrderRecord {
+    local.status = LiveOrderStatus::Accepted;
+    local.exchange_order_id = exchange.exchange_order_id.or(local.exchange_order_id);
+    local.response_type = Some("ACK".to_string());
+    local.self_trade_prevention_mode = exchange.self_trade_prevention_mode;
+    local.price_match = exchange.price_match;
+    local.expire_reason = exchange.expire_reason;
     local.updated_at = exchange.updated_at.max(now_ms());
     local.last_error = None;
     local
@@ -3430,6 +4142,7 @@ fn live_order_status_from_exchange_status(status: &str) -> LiveOrderStatus {
         "CANCELED" => LiveOrderStatus::Canceled,
         "REJECTED" => LiveOrderStatus::Rejected,
         "EXPIRED" => LiveOrderStatus::Expired,
+        "EXPIRED_IN_MATCH" => LiveOrderStatus::ExpiredInMatch,
         _ => LiveOrderStatus::UnknownNeedsRepair,
     }
 }
@@ -3582,7 +4295,9 @@ fn account_snapshot_to_shadow(snapshot: LiveAccountSnapshot, updated_at: i64) ->
         open_orders: Vec::new(),
         can_trade: snapshot.can_trade,
         multi_assets_margin: snapshot.multi_assets_margin,
-        position_mode: Some("one_way".to_string()),
+        position_mode: snapshot
+            .position_mode
+            .or_else(|| Some("one_way".to_string())),
         last_event_time: None,
         last_rest_sync_at: Some(snapshot.fetched_at),
         updated_at,
@@ -3600,6 +4315,9 @@ struct LiveStatusBuildInput<'a> {
     intent_preview: Option<LiveOrderPreview>,
     recent_preflights: Vec<LiveOrderPreflightResult>,
     execution: LiveExecutionSnapshot,
+    kill_switch: LiveKillSwitchState,
+    risk_profile: LiveRiskProfile,
+    auto_executor: LiveAutoExecutorStatus,
     paper_position_open: bool,
     extra_blocking: Vec<LiveBlockingReason>,
     now_ms: i64,
@@ -3616,6 +4334,9 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
         intent_preview,
         recent_preflights,
         execution,
+        kill_switch,
+        risk_profile,
+        auto_executor,
         paper_position_open,
         extra_blocking,
         now_ms,
@@ -3742,6 +4463,9 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
             blocking_reasons.push(reason);
         }
     }
+    if kill_switch.engaged && !blocking_reasons.contains(&LiveBlockingReason::KillSwitchEngaged) {
+        blocking_reasons.push(LiveBlockingReason::KillSwitchEngaged);
+    }
     blocking_reasons.sort_by_key(|reason| reason.as_str());
     blocking_reasons.dedup();
     warnings.dedup();
@@ -3823,6 +4547,9 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
         reconciliation: &reconciliation,
         intent_preview: intent_preview.as_ref(),
         execution,
+        kill_switch: &kill_switch,
+        risk_profile: &risk_profile,
+        auto_executor: &auto_executor,
         now_ms,
         options,
     });
@@ -3830,9 +4557,26 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
         state = LiveRuntimeState::TestnetExecutionReady;
     } else if execution.state == LiveExecutionState::MainnetExecutionBlocked {
         state = LiveRuntimeState::MainnetExecutionBlocked;
+    } else if execution.state == LiveExecutionState::MainnetCanaryReady {
+        state = LiveRuntimeState::MainnetCanaryReady;
+    } else if execution.state == LiveExecutionState::MainnetManualExecutionEnabled {
+        state = LiveRuntimeState::MainnetManualExecutionEnabled;
+    } else if execution.state == LiveExecutionState::TestnetAutoRunning {
+        state = LiveRuntimeState::TestnetAutoRunning;
+    } else if execution.state == LiveExecutionState::KillSwitchEngaged {
+        state = LiveRuntimeState::KillSwitchEngaged;
     } else if execution.state == LiveExecutionState::ExecutionDegraded {
         state = LiveRuntimeState::ExecutionDegraded;
     }
+
+    let mainnet_canary = build_mainnet_canary_status(
+        live_state.environment,
+        options.enable_mainnet_canary_execution,
+        &risk_profile,
+        &execution,
+        intent_preview.as_ref(),
+        now_ms,
+    );
 
     LiveStatusSnapshot {
         feature_visible: true,
@@ -3849,6 +4593,10 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
         recent_preflights,
         execution,
         execution_availability,
+        kill_switch,
+        risk_profile,
+        auto_executor,
+        mainnet_canary,
         updated_at: now_ms,
     }
 }
@@ -3861,6 +4609,9 @@ struct ExecutionStatusInput<'a> {
     reconciliation: &'a LiveReconciliationStatus,
     intent_preview: Option<&'a LiveOrderPreview>,
     execution: LiveExecutionSnapshot,
+    kill_switch: &'a LiveKillSwitchState,
+    risk_profile: &'a LiveRiskProfile,
+    auto_executor: &'a LiveAutoExecutorStatus,
     now_ms: i64,
     options: &'a ServiceOptions,
 }
@@ -3876,14 +4627,25 @@ fn build_execution_status(
         reconciliation,
         intent_preview,
         mut execution,
+        kill_switch,
+        risk_profile,
+        auto_executor,
         now_ms,
         options,
     } = input;
     let mut blocking = readiness_blocking.to_vec();
     let mut warnings = readiness_warnings.to_vec();
 
-    if live_state.environment == LiveEnvironment::Mainnet {
-        blocking.push(LiveBlockingReason::MainnetExecutionBlocked);
+    if kill_switch.engaged {
+        blocking.push(LiveBlockingReason::KillSwitchEngaged);
+    }
+    if live_state.environment == LiveEnvironment::Mainnet
+        && !options.enable_mainnet_canary_execution
+    {
+        blocking.push(LiveBlockingReason::MainnetCanaryDisabled);
+    }
+    if live_state.environment == LiveEnvironment::Mainnet && !risk_profile.configured {
+        blocking.push(LiveBlockingReason::MainnetCanaryRiskProfileMissing);
     }
     if !live_state.armed {
         blocking.push(LiveBlockingReason::RuntimeBusy);
@@ -3945,6 +4707,9 @@ fn build_execution_status(
                 if now_ms.saturating_sub(intent.built_at) > options.live_intent_ttl_ms {
                     blocking.push(LiveBlockingReason::PreviewMismatch);
                 }
+                if risk_profile.configured && intent_exceeds_risk_limits(intent, risk_profile) {
+                    blocking.push(LiveBlockingReason::RiskLimitExceeded);
+                }
                 if !intent.can_execute_now && live_state.environment == LiveEnvironment::Testnet {
                     blocking.push(LiveBlockingReason::ExecutionNotImplemented);
                 }
@@ -3958,6 +4723,13 @@ fn build_execution_status(
     blocking.sort_by_key(|reason| reason.as_str());
     blocking.dedup();
     warnings.dedup();
+
+    if live_state.environment == LiveEnvironment::Testnet
+        && auto_executor.state == LiveAutoExecutorStateKind::Running
+        && !blocking.contains(&LiveBlockingReason::RuntimeBusy)
+    {
+        // Auto mode shares manual execution gates; status text distinguishes the operator mode.
+    }
 
     let can_submit = readiness_ready && blocking.is_empty();
     let state = active_order
@@ -3973,12 +4745,22 @@ fn build_execution_status(
             LiveOrderStatus::Canceled
             | LiveOrderStatus::Rejected
             | LiveOrderStatus::Expired
+            | LiveOrderStatus::ExpiredInMatch
             | LiveOrderStatus::UnknownNeedsRepair
             | LiveOrderStatus::LocalCreated => LiveExecutionState::ExecutionDegraded,
         })
         .unwrap_or_else(|| {
             if live_state.environment == LiveEnvironment::Mainnet {
-                LiveExecutionState::MainnetExecutionBlocked
+                if can_submit && options.enable_mainnet_canary_execution && risk_profile.configured
+                {
+                    LiveExecutionState::MainnetCanaryReady
+                } else {
+                    LiveExecutionState::MainnetExecutionBlocked
+                }
+            } else if kill_switch.engaged {
+                LiveExecutionState::KillSwitchEngaged
+            } else if can_submit && auto_executor.state == LiveAutoExecutorStateKind::Running {
+                LiveExecutionState::TestnetAutoRunning
             } else if can_submit {
                 LiveExecutionState::TestnetExecutionReady
             } else if blocking.contains(&LiveBlockingReason::ShadowStateAmbiguous)
@@ -3996,6 +4778,9 @@ fn build_execution_status(
     execution.blocking_reasons = blocking.clone();
     execution.warnings = warnings;
     execution.active_order = active_order;
+    execution.kill_switch_engaged = kill_switch.engaged;
+    execution.mainnet_canary_enabled = options.enable_mainnet_canary_execution;
+    execution.repair_recent_window_only = true;
     execution.updated_at = now_ms;
 
     let first_reason = blocking
@@ -4006,9 +4791,20 @@ fn build_execution_status(
         can_execute_live: can_submit,
         reason: first_reason,
         message: if can_submit {
-            "TESTNET execution ready for the displayed preview.".to_string()
+            if live_state.environment == LiveEnvironment::Mainnet {
+                "MAINNET canary execution ready for the displayed preview.".to_string()
+            } else {
+                "TESTNET execution ready for the displayed preview.".to_string()
+            }
+        } else if live_state.environment == LiveEnvironment::Mainnet
+            && !options.enable_mainnet_canary_execution
+        {
+            "MAINNET canary execution is disabled by server policy.".to_string()
         } else if live_state.environment == LiveEnvironment::Mainnet {
-            "MAINNET execution is blocked in this build.".to_string()
+            format!(
+                "MAINNET canary execution blocked: {}",
+                first_reason.as_str()
+            )
         } else {
             format!("TESTNET execution blocked: {}", first_reason.as_str())
         },

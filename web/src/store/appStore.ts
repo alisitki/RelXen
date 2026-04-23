@@ -294,6 +294,66 @@ export const useAppStore = create<AppStoreState>((set) => ({
               created_at: Date.now()
             });
             break;
+          case "live_kill_switch_updated":
+            if (next.liveStatus) {
+              next.liveStatus = {
+                ...next.liveStatus,
+                kill_switch: event.payload,
+                execution: {
+                  ...next.liveStatus.execution,
+                  kill_switch_engaged: event.payload.engaged,
+                  updated_at: event.payload.updated_at
+                },
+                updated_at: event.payload.updated_at
+              };
+            }
+            next.toasts = enqueueToast(next.toasts, {
+              id: ++toastId,
+              kind: event.payload.engaged ? "error" : "info",
+              message: event.payload.engaged ? "Kill switch engaged." : "Kill switch released.",
+              created_at: Date.now()
+            });
+            break;
+          case "live_auto_state_updated":
+            if (next.liveStatus) {
+              next.liveStatus = {
+                ...next.liveStatus,
+                auto_executor: event.payload,
+                updated_at: event.payload.updated_at
+              };
+            }
+            break;
+          case "live_execution_degraded":
+            next.toasts = enqueueToast(next.toasts, {
+              id: ++toastId,
+              kind: "error",
+              message: `Live execution degraded: ${event.payload.reason}`,
+              created_at: Date.now()
+            });
+            break;
+          case "live_execution_resynced":
+            next.toasts = enqueueToast(next.toasts, {
+              id: ++toastId,
+              kind: "info",
+              message: "Live execution state repaired from recent exchange window.",
+              created_at: Date.now()
+            });
+            break;
+          case "live_mainnet_gate_updated":
+            if (next.liveStatus) {
+              next.liveStatus = {
+                ...next.liveStatus,
+                execution: {
+                  ...next.liveStatus.execution,
+                  mainnet_canary_enabled: event.payload.enabled
+                },
+                mainnet_canary: {
+                  ...next.liveStatus.mainnet_canary,
+                  enabled_by_server: event.payload.enabled
+                }
+              };
+            }
+            break;
           case "live_order_submitted":
           case "live_order_updated":
             if (next.liveStatus) {
@@ -428,7 +488,13 @@ function upsertLiveFill(fills: LiveFillRecord[], fill: LiveFillRecord, limit: nu
 }
 
 function isTerminalLiveOrder(status: LiveOrderRecord["status"]): boolean {
-  return status === "filled" || status === "canceled" || status === "rejected" || status === "expired";
+  return (
+    status === "filled" ||
+    status === "canceled" ||
+    status === "rejected" ||
+    status === "expired" ||
+    status === "expired_in_match"
+  );
 }
 
 function keepTail<T>(items: T[], limit: number): T[] {

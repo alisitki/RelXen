@@ -15,11 +15,12 @@ use url::form_urlencoded::Serializer;
 
 use relxen_app::{now_ms, AppError, AppResult, LiveExchangePort, LiveUserDataStream};
 use relxen_domain::{
-    LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance, LiveCredentialId,
-    LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
-    LiveEnvironment, LiveFillRecord, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
-    LiveOrderType, LivePositionSnapshot, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
-    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, QuoteAsset, Symbol,
+    LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
+    LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationResult,
+    LiveCredentialValidationStatus, LiveEnvironment, LiveFillRecord, LiveOrderRecord,
+    LiveOrderSide, LiveOrderStatus, LiveOrderType, LivePositionSnapshot, LiveShadowBalance,
+    LiveShadowOrder, LiveShadowPosition, LiveSymbolFilterSummary, LiveSymbolRules,
+    LiveUserDataEvent, QuoteAsset, Symbol,
 };
 
 const MAINNET_REST_BASE: &str = "https://fapi.binance.com";
@@ -143,6 +144,44 @@ impl LiveExchangePort for BinanceLiveReadOnly {
         )
         .await?;
         Ok(account.into_snapshot(environment, now_ms()))
+    }
+
+    async fn fetch_account_mode(
+        &self,
+        environment: LiveEnvironment,
+        secret: &LiveCredentialSecret,
+    ) -> AppResult<LiveAccountModeStatus> {
+        let position_mode = self
+            .signed_request_json::<BinancePositionModeResponse>(
+                Method::GET,
+                environment,
+                "/fapi/v1/positionSide/dual",
+                secret,
+                &BTreeMap::new(),
+            )
+            .await?;
+        let multi_assets = self
+            .signed_request_json::<BinanceMultiAssetsModeResponse>(
+                Method::GET,
+                environment,
+                "/fapi/v1/multiAssetsMargin",
+                secret,
+                &BTreeMap::new(),
+            )
+            .await?;
+        Ok(LiveAccountModeStatus {
+            environment,
+            position_mode: Some(
+                if position_mode.dual_side_position {
+                    "hedge"
+                } else {
+                    "one_way"
+                }
+                .to_string(),
+            ),
+            multi_assets_margin: Some(multi_assets.multi_assets_margin),
+            fetched_at: now_ms(),
+        })
     }
 
     async fn fetch_symbol_rules(
@@ -288,12 +327,6 @@ impl LiveExchangePort for BinanceLiveReadOnly {
         secret: &LiveCredentialSecret,
         payload: &BTreeMap<String, String>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet: actual order placement is testnet-only"
-                    .to_string(),
-            ));
-        }
         info!(
             event = "live_execute_requested",
             environment = %environment,
@@ -321,12 +354,6 @@ impl LiveExchangePort for BinanceLiveReadOnly {
         orig_client_order_id: Option<&str>,
         order_id: Option<&str>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet: actual order cancel is testnet-only"
-                    .to_string(),
-            ));
-        }
         let mut payload = BTreeMap::new();
         payload.insert("symbol".to_string(), symbol.as_str().to_string());
         if let Some(orig_client_order_id) = orig_client_order_id {
@@ -592,6 +619,20 @@ struct BinanceError {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BinancePositionModeResponse {
+    #[serde(deserialize_with = "de_boolish")]
+    dual_side_position: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinanceMultiAssetsModeResponse {
+    #[serde(deserialize_with = "de_boolish")]
+    multi_assets_margin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BinanceOrderResponse {
     order_id: i64,
     symbol: String,
@@ -615,6 +656,12 @@ struct BinanceOrderResponse {
     reduce_only: bool,
     #[serde(default)]
     update_time: Option<i64>,
+    #[serde(default)]
+    self_trade_prevention_mode: Option<String>,
+    #[serde(default)]
+    price_match: Option<String>,
+    #[serde(default)]
+    expire_reason: Option<String>,
 }
 
 impl BinanceOrderResponse {
@@ -657,8 +704,13 @@ impl BinanceOrderResponse {
             intent_id: None,
             intent_hash: None,
             source_signal_id: None,
+            source_open_time: None,
             reason: "exchange_order_status".to_string(),
             payload,
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: self.self_trade_prevention_mode,
+            price_match: self.price_match,
+            expire_reason: self.expire_reason,
             last_error: None,
             submitted_at: fallback_time,
             updated_at,
@@ -737,6 +789,8 @@ impl BinanceAccountResponse {
             environment,
             can_trade: self.can_trade,
             multi_assets_margin: self.multi_assets_margin,
+            position_mode: None,
+            account_mode_checked_at: None,
             total_wallet_balance: self.total_wallet_balance,
             total_margin_balance: self.total_margin_balance,
             available_balance: self.available_balance,
@@ -1027,6 +1081,9 @@ fn parse_order_trade_update(value: serde_json::Value) -> AppResult<LiveUserDataE
                 .get("t")
                 .and_then(serde_json::Value::as_i64)
                 .map(|id| id.to_string()),
+            self_trade_prevention_mode: string_field(&order, "V"),
+            price_match: string_field(&order, "pm"),
+            expire_reason: string_field(&order, "er"),
             last_update_time: order
                 .get("T")
                 .and_then(serde_json::Value::as_i64)
@@ -1087,7 +1144,24 @@ fn live_order_status_from_binance(value: &str) -> LiveOrderStatus {
         "CANCELED" => LiveOrderStatus::Canceled,
         "REJECTED" => LiveOrderStatus::Rejected,
         "EXPIRED" => LiveOrderStatus::Expired,
+        "EXPIRED_IN_MATCH" => LiveOrderStatus::ExpiredInMatch,
         _ => LiveOrderStatus::UnknownNeedsRepair,
+    }
+}
+
+fn de_boolish<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Bool(value) => Ok(value),
+        serde_json::Value::String(value) => match value.as_str() {
+            "true" | "TRUE" | "1" => Ok(true),
+            "false" | "FALSE" | "0" => Ok(false),
+            _ => Err(serde::de::Error::custom("invalid bool string")),
+        },
+        _ => Err(serde::de::Error::custom("invalid bool value")),
     }
 }
 
@@ -1265,6 +1339,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_mode_uses_dedicated_position_and_multi_assets_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fapi/v1/positionSide/dual"))
+            .and(header("X-MBX-APIKEY", "api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "dualSidePosition": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/fapi/v1/multiAssetsMargin"))
+            .and(header("X-MBX-APIKEY", "api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "multiAssetsMargin": "true"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mode = adapter(&server)
+            .fetch_account_mode(LiveEnvironment::Testnet, &secret())
+            .await
+            .unwrap();
+
+        assert_eq!(mode.position_mode.as_deref(), Some("hedge"));
+        assert_eq!(mode.multi_assets_margin, Some(true));
+    }
+
+    #[tokio::test]
     async fn symbol_rules_parse_required_filters() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1355,7 +1460,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_order_is_testnet_only_and_sends_signed_order_payload() {
+    async fn submit_order_sends_ack_signed_payload_with_environment_routing() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/fapi/v1/order"))
@@ -1366,7 +1471,7 @@ mod tests {
             .and(query_param("quantity", "0.001"))
             .and(query_param("newClientOrderId", "rx_exec_test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(order_body("NEW")))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -1383,14 +1488,14 @@ mod tests {
             .unwrap();
         assert_eq!(order.status, LiveOrderStatus::Working);
         assert_eq!(order.client_order_id, "rx_exec_test");
+        assert_eq!(order.response_type.as_deref(), Some("ACK"));
 
-        let error = adapter(&server)
+        let mainnet_order = adapter(&server)
             .submit_order(LiveEnvironment::Mainnet, &secret(), &payload)
             .await
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("execution_not_supported_on_mainnet"));
+            .unwrap();
+        assert_eq!(mainnet_order.environment, LiveEnvironment::Mainnet);
+        assert_eq!(mainnet_order.response_type.as_deref(), Some("ACK"));
     }
 
     #[tokio::test]

@@ -28,7 +28,7 @@ Application orchestration and contracts:
 - runtime state transitions
 - typed snapshot assembly
 - command handling for start/stop/settings/paper actions
-- live credential metadata, readiness, read-only validation, shadow reconciliation, intent preview, preflight, testnet execution gating, cancel/flatten orchestration, and start-gating services
+- live credential metadata, readiness, read-only validation, shadow reconciliation, intent preview, preflight, testnet/mainnet-canary execution gating, kill switch, auto-execution, cancel/flatten orchestration, and start-gating services
 
 ### `crates/infra`
 
@@ -38,7 +38,7 @@ Operational adapters:
 - Binance WebSocket kline stream adapter
 - SQLite repositories and migrations
 - OS secure-storage adapter for live secrets
-- Binance live adapter for signed validation, account snapshots, symbol rules, listenKey lifecycle, user-data events, testnet `order/test` preflight, and constrained TESTNET-only `MARKET` / `LIMIT` order/cancel requests
+- Binance live adapter for signed validation, account snapshots, symbol rules, dedicated position/multi-assets mode checks, listenKey lifecycle, user-data events, testnet `order/test` preflight, and constrained `MARKET` / `LIMIT` order/cancel requests
 - internal event bus for outbound server events
 - system metrics sampler
 
@@ -60,7 +60,7 @@ React single-page dashboard:
 - WebSocket delta subscription
 - selector-based Zustand store
 - charting via `lightweight-charts`
-- integrated LIVE ACCESS panel for credential/readiness, shadow sync, intent preview, preflight, and explicit TESTNET execution/cancel/flatten operations, with MAINNET execution blocked
+- integrated LIVE ACCESS panel for credential/readiness, shadow sync, intent preview, preflight, kill switch, TESTNET auto, explicit TESTNET execution/cancel/flatten, and default-off MAINNET canary controls
 
 ## Startup Flow
 
@@ -101,5 +101,5 @@ The market-data port uses explicit ranged requests only. Bootstrap, runtime star
 - only one active symbol can run at a time
 - only one open position can exist at a time
 - opposite signals close or reverse the existing position
-- live access supports credentials, validation, readiness, shadow sync, testnet preflight, and constrained TESTNET-only matching-engine `MARKET` / `LIMIT` execution/cancel/flatten; MAINNET execution remains blocked
+- live access supports credentials, validation, readiness, shadow sync, testnet preflight, constrained TESTNET matching-engine `MARKET` / `LIMIT` execution/cancel/flatten/auto-execution, and manual MAINNET canary execution behind default-off server gates
 - resync uses `resync_required` plus a fresh snapshot, not fatal client desync

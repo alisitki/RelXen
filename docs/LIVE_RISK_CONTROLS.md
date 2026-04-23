@@ -2,7 +2,7 @@
 
 ## Principle
 
-Live execution must be operator-gated and fail closed. In the current repository, actual execution is constrained to TESTNET-only `MARKET` / `LIMIT` placement/cancel/flatten. Risk controls must run before arming, before runtime start, and before every order intent becomes an exchange order request.
+Live execution must be operator-gated and fail closed. In the current repository, actual execution includes TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, TESTNET closed-candle auto-execution, and manual MAINNET canary execution behind a default-off server gate. Risk controls must run before arming, before runtime start, before auto-execution, and before every order intent becomes an exchange order request.
 
 ## Account-Level Controls
 
@@ -14,7 +14,8 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Optional max exposure by quote asset.
 - Quote-asset-specific balance checks for `USDT` and `USDC`.
 - Minimum free balance after estimated fee and margin.
-- Mainnet/testnet environment separation. MAINNET execution is blocked in this build.
+- Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` and all canary gates.
+- Explicit operator-configured risk profile before MAINNET canary readiness.
 
 ## Runtime Guards
 
@@ -26,6 +27,9 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Duplicate signal/order suppression prevents repeated execution for the same closed candle.
 - Clock drift or timestamp ambiguity blocks signed requests.
 - Repeated exchange rejection engages a safe stop.
+- Real submission handling uses `ACK` and authoritative reconciliation; an ACK is never treated as a fill.
+- User-data streams force reconnect and REST repair before the 24-hour lifecycle limit.
+- Execution repair is recent-window only because Binance order/trade query retention is finite.
 
 ## Start-Gating Conditions
 
@@ -42,6 +46,8 @@ Live runtime may start only when all are true:
 - Risk limits are configured and valid.
 - Market data is connected and not stale.
 - Operator has confirmed the current environment, especially mainnet.
+- Dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
+- MAINNET canary has the server canary flag enabled and exact confirmation text for the current preview.
 
 ## Stop Conditions
 
@@ -60,11 +66,12 @@ Live runtime must stop or degrade when:
 
 - Arm/disarm live mode.
 - Kill switch.
+- TESTNET auto start/stop.
 - Manual flatten intent.
-- Manual TESTNET flatten execution when shadow state is coherent.
+- Manual TESTNET or canary-gated MAINNET flatten execution when shadow state is coherent.
 - Manual refresh of credentials, rules, and account snapshot.
 - Clear recovery workflow after failure.
-- Explicit confirmation before mainnet arming.
+- Exact confirmation before MAINNET canary execution.
 
 Manual flatten should be an intent routed through the same credential, rules, precision, reduce-only, and reconciliation gates as strategy orders.
 The implemented TESTNET flatten path cancels active-symbol open orders first, then submits a reduce-only MARKET close only when account mode and shadow position state are deterministic.
@@ -73,6 +80,7 @@ The implemented TESTNET flatten path cancels active-symbol open orders first, th
 
 - Do not auto-rearm after kill switch.
 - Do not auto-rearm after reconciliation failure.
+- Do not auto-restart TESTNET auto-execution after kill switch or reconciliation failure.
 - Require fresh account snapshot after any exchange rejection burst.
 - Require operator acknowledgement before moving from degraded/error back to ready.
 - Preserve audit events for the failure and recovery path.
@@ -87,6 +95,7 @@ The implemented TESTNET flatten path cancels active-symbol open orders first, th
 - Confirmation wording that includes symbol, environment, max notional, and max loss.
 - Clear kill-switch button and post-kill status.
 - Reconciliation status and last account snapshot age.
+- Explicit `MAINNET CANARY READY` versus `MAINNET EXECUTION BLOCKED` text.
 
 ## Fail-Closed Defaults
 

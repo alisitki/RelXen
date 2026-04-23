@@ -9,21 +9,29 @@ vi.mock("../api/client", async (importOriginal) => {
     ...actual,
     armLive: vi.fn(),
     cancelAllLiveOrders: vi.fn(),
+    cancelAllLiveOrdersWithPayload: vi.fn(),
     cancelLiveOrder: vi.fn(),
+    cancelLiveOrderWithPayload: vi.fn(),
+    configureLiveRiskProfile: vi.fn(),
     createLiveCredential: vi.fn(),
     deleteLiveCredential: vi.fn(),
     disarmLive: vi.fn(),
+    engageLiveKillSwitch: vi.fn(),
     executeLivePreview: vi.fn(),
     flattenLivePosition: vi.fn(),
+    flattenLivePositionWithPayload: vi.fn(),
     getLiveIntentPreview: vi.fn(),
     listLiveCredentials: vi.fn(),
     liveStartCheck: vi.fn(),
     refreshLiveReadiness: vi.fn(),
     refreshLiveShadow: vi.fn(),
+    releaseLiveKillSwitch: vi.fn(),
     runLivePreflight: vi.fn(),
     selectLiveCredential: vi.fn(),
     setLiveModePreference: vi.fn(),
+    startLiveAuto: vi.fn(),
     startLiveShadow: vi.fn(),
+    stopLiveAuto: vi.fn(),
     stopLiveShadow: vi.fn(),
     updateLiveCredential: vi.fn(),
     validateLiveCredential: vi.fn()
@@ -80,6 +88,8 @@ function readyStatus(overrides: ReadyStatusOverrides = {}): LiveStatusSnapshot {
     environment: "testnet",
     can_trade: true,
     multi_assets_margin: false,
+    position_mode: "one_way",
+    account_mode_checked_at: 2_000,
     total_wallet_balance: 1000,
     total_margin_balance: 1000,
     available_balance: 900,
@@ -139,6 +149,8 @@ function readyStatus(overrides: ReadyStatusOverrides = {}): LiveStatusSnapshot {
       recent_orders: [],
       recent_fills: [],
       kill_switch_engaged: false,
+      repair_recent_window_only: true,
+      mainnet_canary_enabled: false,
       updated_at: 2_000
     },
     ...statusOverrides
@@ -205,7 +217,7 @@ describe("live access panel", () => {
     renderWithClient(<LiveAccessPanel />);
 
     expect(screen.getByText("VALIDATION FAILED")).toBeTruthy();
-    expect(screen.getByText("validation_failed, symbol_rules_missing")).toBeTruthy();
+    expect(screen.getByText(/validation_failed, symbol_rules_missing/)).toBeTruthy();
     expect(screen.getByText("testnet_environment, validation_stale")).toBeTruthy();
     expect(screen.getByText(/BTCUSDT TRADING tick 0.1/)).toBeTruthy();
     expect(screen.getByText(/available 900/)).toBeTruthy();
@@ -458,7 +470,7 @@ describe("live access panel", () => {
     await user.click(screen.getByRole("button", { name: "Build Preview" }));
     expect(await screen.findByText("Live order intent preview built.")).toBeTruthy();
     expect(screen.getByText(/BUY MARKET BTCUSDT qty 0.010/)).toBeTruthy();
-    expect(screen.getByText(/TESTNET ONLY/)).toBeTruthy();
+    expect(screen.getByText(/TESTNET EXECUTION GATED/)).toBeTruthy();
     expect(screen.getAllByText(/EXECUTION BLOCKED/).length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Run Preflight" }));
@@ -530,6 +542,7 @@ describe("live access panel", () => {
       intent_id: "intent-1",
       intent_hash: "intent-hash-1",
       source_signal_id: "signal-1",
+      source_open_time: 5_000,
       reason: "closed candle BUY signal",
       payload: {
         symbol: "BTCUSDT",
@@ -537,6 +550,10 @@ describe("live access panel", () => {
         type: "MARKET",
         quantity: "0.010"
       },
+      response_type: "ACK",
+      self_trade_prevention_mode: null,
+      price_match: null,
+      expire_reason: null,
       last_error: null,
       submitted_at: 7_000,
       updated_at: 7_000
@@ -600,6 +617,8 @@ describe("live access panel", () => {
           recent_orders: [],
           recent_fills: [],
           kill_switch_engaged: false,
+          repair_recent_window_only: true,
+          mainnet_canary_enabled: false,
           updated_at: 6_000
         },
         execution_availability: {

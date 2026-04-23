@@ -155,9 +155,11 @@ Key risks: Creating exchange state without reliable reconciliation, duplicate su
 
 Rollback/fail-closed behavior: Disable placement endpoints, disarm live mode, leave shadow/preflight available, and keep paper mode operational.
 
-## Phase 3C — Strategy-Driven Testnet Auto-Executor And Kill Switch Slice (Next)
+## Phase 3C — Strategy-Driven Testnet Auto-Executor And Kill Switch Slice (Complete)
 
 Goal: Add strategy-driven closed-candle TESTNET auto-execution behind explicit arming, duplicate-signal suppression, kill switch, and exchange-authoritative reconciliation.
+
+Status: Implemented in Mainnet Readiness Hardening v1. TESTNET auto-execution is opt-in, closed-candle-only, backed by persisted signal/intent locks, and stopped by the kill switch and normal execution gates.
 
 Non-goals: No mainnet execution, no conditional/algo orders, no unattended production claims, no multi-symbol runtime.
 
@@ -187,11 +189,13 @@ Key risks: Duplicate live submissions, operator confusion between manual and aut
 
 Rollback/fail-closed behavior: Disable auto-execution, engage kill switch, keep manual testnet controls and paper mode operational.
 
-## Phase 4 — Constrained Mainnet Slice
+## Phase 4 — Manual Mainnet Canary Slice (Canary-Ready)
 
-Goal: Enable a tightly constrained mainnet path only after prior evidence is green.
+Goal: Enable a tightly constrained manual mainnet canary path while keeping broad mainnet execution default-off and fail-closed.
 
-Non-goals: No broad exchange feature set, no multi-symbol runtime, no unattended operation claims.
+Status: Implemented as a default-off manual canary path. `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` blocks it by default. When enabled, manual MAINNET canary submission uses the same ACK-plus-authoritative-reconciliation pipeline as TESTNET, requires a configured risk profile, fresh shadow/rules/account state, dedicated one-way and single-asset-mode checks, arming, a fresh preview, and exact operator confirmation. MAINNET auto-execution remains blocked.
+
+Non-goals: No broad exchange feature set, no MAINNET auto-execution, no multi-symbol runtime, no unattended operation claims.
 
 Likely files/modules to touch:
 
@@ -200,32 +204,32 @@ Likely files/modules to touch:
 Tests required:
 
 - Full fake-exchange regression suite.
-- Testnet evidence runbook.
-- Mainnet dry-run preflight tests.
+- Testnet evidence runbook and soak drill.
+- Mainnet canary blocked/default-off tests.
 - Explicit operator confirmation tests.
 - Failure and kill-switch drills.
 
 Exit criteria:
 
-- Mainnet arming requires explicit operator confirmation.
-- Conservative limits are enforced.
+- Mainnet canary requires server enablement and exact operator confirmation.
+- Operator-configured risk profile is required and enforced.
 - Reconciliation is exchange-authoritative.
 - Rollback to paper-only is documented and tested.
 
 Key risks: Real financial loss, operator confusion, stale account state, exchange-side rule changes.
 
-Rollback/fail-closed behavior: Kill switch, disarm, credential revocation, and paper-only fallback.
+Rollback/fail-closed behavior: Kill switch, disarm, disable `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`, credential revocation, and paper-only fallback.
 
 ## Smallest Safe Next Implementation Batch
 
-Add an explicit kill switch and strategy-driven closed-candle TESTNET auto-executor behind arming, duplicate-signal suppression, and exchange-authoritative fill reconciliation. Do not add mainnet placement.
+Run a documented testnet auto-execution soak drill and capture reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.
 
 ## What Not To Do Next
 
-- Do not implement mainnet signed order endpoints.
+- Do not enable broad mainnet operation beyond the existing manual canary gate.
 - Do not store secrets in SQLite or frontend storage.
 - Do not turn the paper engine into live reconciliation truth.
-- Do not add mainnet UI controls before testnet auto-execution, kill-switch drills, and reconciliation evidence are proven.
+- Do not run MAINNET canary until testnet auto-execution, kill-switch drills, and reconciliation evidence are documented.
 - Do not expand to multiple symbols while live boundaries are still immature.
 
 ## Avoiding An Endless Rewrite

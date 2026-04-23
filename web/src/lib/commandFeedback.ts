@@ -26,7 +26,12 @@ export type CommandKind =
   | "live_execute"
   | "live_cancel"
   | "live_cancel_all"
-  | "live_flatten";
+  | "live_flatten"
+  | "live_kill_switch_engage"
+  | "live_kill_switch_release"
+  | "live_auto_start"
+  | "live_auto_stop"
+  | "live_risk_profile";
 
 export function notifyCommandSuccess(addToast: AddToast, command: CommandKind): void {
   addToast(successMessage(command), "info");
@@ -84,6 +89,16 @@ function successMessage(command: CommandKind): string {
       return "TESTNET cancel-all submitted.";
     case "live_flatten":
       return "TESTNET flatten submitted.";
+    case "live_kill_switch_engage":
+      return "Live kill switch engaged.";
+    case "live_kill_switch_release":
+      return "Live kill switch released.";
+    case "live_auto_start":
+      return "TESTNET auto executor started.";
+    case "live_auto_stop":
+      return "TESTNET auto executor stopped.";
+    case "live_risk_profile":
+      return "Live risk profile configured.";
   }
 }
 
@@ -135,5 +150,15 @@ function failureMessage(command: CommandKind): string {
       return "Failed to cancel TESTNET open orders.";
     case "live_flatten":
       return "Failed to flatten TESTNET position.";
+    case "live_kill_switch_engage":
+      return "Failed to engage live kill switch.";
+    case "live_kill_switch_release":
+      return "Failed to release live kill switch.";
+    case "live_auto_start":
+      return "Failed to start TESTNET auto executor.";
+    case "live_auto_stop":
+      return "Failed to stop TESTNET auto executor.";
+    case "live_risk_profile":
+      return "Failed to configure live risk profile.";
   }
 }

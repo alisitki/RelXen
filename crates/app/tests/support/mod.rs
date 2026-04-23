@@ -19,13 +19,14 @@ use relxen_app::{
     MarketStream, MarketStreamEvent, MetricsPort, OutboundEvent, Repository, SecretStore,
 };
 use relxen_domain::{
-    Candle, ConnectionStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
-    LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialValidationResult,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord,
+    Candle, ConnectionStatus, LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot,
+    LiveAssetBalance, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
+    LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
+    LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
     LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LiveReconciliationStatus, LiveStateRecord, LiveSymbolFilterSummary, LiveSymbolRules,
-    LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
-    Trade, Wallet,
+    LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord, LiveSymbolFilterSummary,
+    LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol,
+    SystemMetrics, Timeframe, Trade, Wallet,
 };
 
 pub fn candle(index: i64) -> Candle {
@@ -116,6 +117,10 @@ pub struct MockRepository {
     live_shadow: Mutex<Option<LiveAccountShadow>>,
     live_preflights: Mutex<Vec<LiveOrderPreflightResult>>,
     live_execution: Mutex<Option<LiveExecutionSnapshot>>,
+    live_kill_switch: Mutex<Option<LiveKillSwitchState>>,
+    live_risk_profile: Mutex<Option<LiveRiskProfile>>,
+    live_auto_executor: Mutex<Option<LiveAutoExecutorStatus>>,
+    live_intent_locks: Mutex<Vec<LiveIntentLock>>,
     live_orders: Mutex<Vec<LiveOrderRecord>>,
     live_fills: Mutex<Vec<LiveFillRecord>>,
 }
@@ -375,6 +380,68 @@ impl Repository for MockRepository {
         Ok(())
     }
 
+    async fn load_live_kill_switch(&self) -> AppResult<LiveKillSwitchState> {
+        Ok(self
+            .live_kill_switch
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_kill_switch(&self, state: &LiveKillSwitchState) -> AppResult<()> {
+        *self.live_kill_switch.lock().await = Some(state.clone());
+        Ok(())
+    }
+
+    async fn load_live_risk_profile(&self) -> AppResult<LiveRiskProfile> {
+        Ok(self
+            .live_risk_profile
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_risk_profile(&self, profile: &LiveRiskProfile) -> AppResult<()> {
+        *self.live_risk_profile.lock().await = Some(profile.clone());
+        Ok(())
+    }
+
+    async fn load_live_auto_executor(&self) -> AppResult<LiveAutoExecutorStatus> {
+        Ok(self
+            .live_auto_executor
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_auto_executor(&self, status: &LiveAutoExecutorStatus) -> AppResult<()> {
+        *self.live_auto_executor.lock().await = Some(status.clone());
+        Ok(())
+    }
+
+    async fn get_live_intent_lock(&self, key: &str) -> AppResult<Option<LiveIntentLock>> {
+        Ok(self
+            .live_intent_locks
+            .lock()
+            .await
+            .iter()
+            .find(|lock| lock.key == key)
+            .cloned())
+    }
+
+    async fn upsert_live_intent_lock(&self, lock: &LiveIntentLock) -> AppResult<()> {
+        let mut locks = self.live_intent_locks.lock().await;
+        if let Some(existing) = locks.iter_mut().find(|item| item.key == lock.key) {
+            *existing = lock.clone();
+        } else {
+            locks.push(lock.clone());
+        }
+        Ok(())
+    }
+
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {
         let mut orders = self.live_orders.lock().await.clone();
         orders.sort_by_key(|order| order.updated_at);
@@ -437,6 +504,9 @@ pub struct FakeLiveExchange {
     pub submitted_orders: Mutex<Vec<LiveOrderRecord>>,
     pub fail_submit: bool,
     pub fail_cancel: bool,
+    pub listen_key_creates: AtomicUsize,
+    pub listen_key_closes: AtomicUsize,
+    pub stream_subscriptions: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -503,6 +573,9 @@ impl Default for FakeLiveExchange {
             submitted_orders: Mutex::new(Vec::new()),
             fail_submit: false,
             fail_cancel: false,
+            listen_key_creates: AtomicUsize::new(0),
+            listen_key_closes: AtomicUsize::new(0),
+            stream_subscriptions: AtomicUsize::new(0),
         }
     }
 }
@@ -542,6 +615,23 @@ impl LiveExchangePort for FakeLiveExchange {
             .ok_or_else(|| AppError::Exchange("account snapshot unavailable".to_string()))
     }
 
+    async fn fetch_account_mode(
+        &self,
+        environment: LiveEnvironment,
+        _secret: &LiveCredentialSecret,
+    ) -> AppResult<LiveAccountModeStatus> {
+        let account = self
+            .account
+            .clone()
+            .ok_or_else(|| AppError::Exchange("account snapshot unavailable".to_string()))?;
+        Ok(LiveAccountModeStatus {
+            environment,
+            position_mode: account.position_mode,
+            multi_assets_margin: account.multi_assets_margin,
+            fetched_at: relxen_app::now_ms(),
+        })
+    }
+
     async fn fetch_symbol_rules(
         &self,
         environment: LiveEnvironment,
@@ -562,7 +652,8 @@ impl LiveExchangePort for FakeLiveExchange {
         _environment: LiveEnvironment,
         _secret: &LiveCredentialSecret,
     ) -> AppResult<String> {
-        Ok("fake-listen-key".to_string())
+        let count = self.listen_key_creates.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(format!("fake-listen-key-{count}"))
     }
 
     async fn keepalive_listen_key(
@@ -580,6 +671,7 @@ impl LiveExchangePort for FakeLiveExchange {
         _secret: &LiveCredentialSecret,
         _listen_key: &str,
     ) -> AppResult<()> {
+        self.listen_key_closes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -588,6 +680,7 @@ impl LiveExchangePort for FakeLiveExchange {
         _environment: LiveEnvironment,
         _listen_key: &str,
     ) -> AppResult<relxen_app::LiveUserDataStream> {
+        self.stream_subscriptions.fetch_add(1, Ordering::SeqCst);
         let events: Vec<_> = self.user_events.lock().await.drain(..).collect();
         Ok(Box::pin(stream::iter(events).chain(stream::pending())))
     }
@@ -611,11 +704,6 @@ impl LiveExchangePort for FakeLiveExchange {
         _secret: &LiveCredentialSecret,
         payload: &BTreeMap<String, String>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet".to_string(),
-            ));
-        }
         if self.fail_submit {
             return Err(AppError::Exchange(
                 "network_error: submit failed".to_string(),
@@ -665,8 +753,13 @@ impl LiveExchangePort for FakeLiveExchange {
             intent_id: None,
             intent_hash: None,
             source_signal_id: None,
+            source_open_time: None,
             reason: "fake_exchange".to_string(),
             payload: payload.clone(),
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: None,
+            price_match: None,
+            expire_reason: None,
             last_error: None,
             submitted_at: now,
             updated_at: now,
@@ -683,11 +776,6 @@ impl LiveExchangePort for FakeLiveExchange {
         orig_client_order_id: Option<&str>,
         _order_id: Option<&str>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet".to_string(),
-            ));
-        }
         if self.fail_cancel {
             return Err(AppError::Exchange("cancel_failed".to_string()));
         }
@@ -718,8 +806,13 @@ impl LiveExchangePort for FakeLiveExchange {
                 intent_id: None,
                 intent_hash: None,
                 source_signal_id: None,
+                source_open_time: None,
                 reason: "fake_exchange".to_string(),
                 payload: BTreeMap::new(),
+                response_type: Some("ACK".to_string()),
+                self_trade_prevention_mode: None,
+                price_match: None,
+                expire_reason: None,
                 last_error: None,
                 submitted_at: relxen_app::now_ms(),
                 updated_at: relxen_app::now_ms(),
@@ -785,6 +878,8 @@ pub fn fake_account_snapshot(environment: LiveEnvironment) -> LiveAccountSnapsho
         environment,
         can_trade: true,
         multi_assets_margin: Some(false),
+        position_mode: Some("one_way".to_string()),
+        account_mode_checked_at: Some(relxen_app::now_ms()),
         total_wallet_balance: 1000.0,
         total_margin_balance: 1000.0,
         available_balance: 900.0,

@@ -2,15 +2,16 @@
 
 ## Purpose
 
-This document is the top-level entrypoint for post-v1 live-trading work. It exists to keep live execution bounded: RelXen now has credential, validation, account snapshot, symbol-rule, readiness, user-data shadow reconciliation, precision-aware intent preview, testnet preflight foundations, and constrained TESTNET-only placement/cancel/flatten. MAINNET execution remains blocked.
+This document is the top-level entrypoint for post-v1 live-trading work. It exists to keep live execution bounded: RelXen now has credential, validation, account snapshot, symbol-rule, readiness, user-data shadow reconciliation, precision-aware intent preview, testnet preflight foundations, constrained TESTNET placement/cancel/flatten/auto-execution, kill switch controls, and a manual MAINNET canary path that is disabled by default.
 
 ## Current Repo Truth
 
 - Paper Mode V1 is release-candidate complete.
 - Paper mode remains complete and isolated.
-- Live foundations are implemented for credential metadata, OS secure storage, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, and constrained TESTNET-only order/cancel/flatten.
-- MAINNET order execution is not implemented.
-- The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation and fail-closed gates.
+- Live foundations are implemented for credential metadata, OS secure storage, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
+- MAINNET execution is disabled by default and MAINNET auto-execution is not implemented.
+- The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation or explicit TESTNET auto start, with fail-closed gates.
+- The repository can place a MAINNET canary `MARKET` / `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, and all execution/reconciliation gates pass.
 - The repository stores live credential metadata in SQLite and raw secrets through the OS secure-storage abstraction only.
 
 ## Design Documents
@@ -27,18 +28,19 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 ## Glossary
 
 - Paper mode: Local simulated execution using market data, local wallets, local positions, and no real orders.
-- Live mode: Exchange-connected mode. In this repository state, actual execution is constrained to TESTNET only; MAINNET remains blocked.
+- Live mode: Exchange-connected mode. In this repository state, TESTNET execution and default-off manual MAINNET canary execution exist; MAINNET auto remains blocked.
 - Validation: A precondition check that proves a credential, rule set, account snapshot, setting, or intent is safe enough to proceed.
 - Order intent: Internal instruction describing desired side, quantity, reduce-only behavior, and reason before exchange formatting.
 - Preflight: Binance testnet `order/test` validation of a signed order payload. It validates request shape and exchange acceptance rules but does not place an order.
 - Shadow state: Read-only best-effort account, position, order, and stream state reconstructed from REST and user-data events.
-- Execution: The act of sending an order request to an exchange adapter. Current execution is TESTNET-only and operator-confirmed.
+- Execution: The act of sending an order request to an exchange adapter. Current execution is operator-confirmed for TESTNET and default-off manual MAINNET canary; MAINNET auto remains blocked.
 - Reconciliation: Comparing exchange order, fill, account, and position state against local state until live truth is known.
 - Precision: Numeric representation and rounding discipline for prices, quantities, fees, notional, and PnL.
 - Risk gate: A blocking policy check that must pass before arming, starting, or submitting an order.
 - Fail-closed: Default behavior that blocks execution when state is missing, ambiguous, stale, or invalid.
 - Armed/disarmed: Operator-controlled live readiness state. Disarmed means no live order may be placed.
-- Kill switch: Operator or system action that immediately blocks new live orders and starts a safe stop/flatten process when configured.
+- Kill switch: Operator or system action that immediately blocks new live orders and allows only safe recovery actions when deterministic.
+- Canary gate: Explicit server-side and operator-side controls required before a manual MAINNET canary action can be submitted.
 - `resync_required`: Existing market-data event telling the frontend to reload a fresh snapshot because deterministic delta continuity cannot be proven.
 
 ## Reusable From Paper Architecture
@@ -61,17 +63,17 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Signal events must not directly become exchange orders.
 - Local persisted state must not override exchange-reconciled account or position state.
 - Preflight success must not be treated as an order placement or live position mutation.
-- TESTNET execution evidence must not be generalized to MAINNET without a separate mainnet-readiness slice.
+- TESTNET execution evidence must not be generalized to broad MAINNET operation. Manual MAINNET canary support is default-off and must remain bounded by canary-specific gates and exact confirmations.
 
 ## Intentionally Deferred
 
-- Mainnet order submission and cancel execution.
+- Broad mainnet operation beyond manual canary execution.
 - Conditional/algo orders.
-- Autonomous strategy-driven testnet/live execution.
+- MAINNET auto-execution.
 - Multi-symbol concurrent runtime.
 - Broker-grade audit reporting.
 - Advanced order types beyond the first constrained live slice.
 
 ## Design Rule
 
-Future live implementation must proceed in small slices. The next implementation task is an explicit kill switch and strategy-driven closed-candle TESTNET auto-executor behind arming, duplicate-signal suppression, and exchange-authoritative fill reconciliation. It must not add mainnet placement.
+Future live implementation must proceed in small slices. The next implementation task is a documented testnet auto-execution soak drill that captures reconciliation, kill-switch, cancel, flatten, and restart-repair evidence without enabling mainnet.

@@ -62,10 +62,22 @@ RelXen can maintain Binance user-data shadow state, build decimal/rules-aware or
 
 The preflight path is testnet-only in this repository state. Even if an exchange offers non-matching-engine validation on mainnet, RelXen keeps mainnet preflight blocked until the next execution slice has explicit operator confirmations, kill-switch behavior, and reconciliation evidence.
 
-### Constrained testnet execution is allowed, mainnet execution remains blocked
+### Constrained testnet execution is allowed, mainnet remains canary-gated
 
-RelXen now permits actual Binance USDⓈ-M Futures TESTNET `MARKET` / `LIMIT` placement, cancel, cancel-all-active-symbol, and flatten only after explicit operator confirmation and fail-closed gates. MAINNET execution has no bypass in this build. Conditional/algo orders remain out of scope.
+RelXen now permits actual Binance USDⓈ-M Futures TESTNET `MARKET` / `LIMIT` placement, cancel, cancel-all-active-symbol, flatten, and closed-candle auto-execution only after explicit operator controls and fail-closed gates. MAINNET manual canary execution uses the same execution pipeline but is disabled by default through `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`, requires an operator-configured risk profile, exact confirmation text, fresh shadow/rules/account state, and all normal gates. MAINNET auto-execution and conditional/algo orders remain out of scope.
 
 ### Exchange reconciliation is authoritative for testnet execution
 
 Local live order records are request/audit state, not fill truth. User-data stream order/fill updates and bounded REST repair define order lifecycle, fills, and shadow account/position state. The UI must not show a placement acknowledgement as a fill, and ambiguous submission status must block new submissions until repaired or marked degraded.
+
+### Real submissions use ACK plus authoritative reconciliation
+
+RelXen requests `ACK` for real Binance order submission. ACK confirms request acceptance only; user-data stream events and bounded REST repair are authoritative for working, partial-fill, fill, cancel, reject, and expiry states. Unknown submission outcomes are repaired before any retry to avoid duplicate orders.
+
+### Execution repair is recent-window only
+
+RelXen repair logic intentionally queries a bounded recent order/trade window because Binance order and trade query surfaces have retention limits. If an older or ambiguous execution state cannot be proven from the recent window, the system stays degraded and blocks new submissions instead of manufacturing certainty.
+
+### Account mode checks use dedicated Binance endpoints
+
+Live execution gates use Binance USDⓈ-M dedicated position-mode and multi-assets-mode endpoints rather than inferring mode from account snapshots alone. Hedge mode and multi-assets mode remain unsupported and fail closed.

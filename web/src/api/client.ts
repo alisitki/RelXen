@@ -13,6 +13,7 @@ import type {
   LiveOrderPreflightResult,
   LiveOrderPreview,
   LiveOrderType,
+  LiveRiskProfile,
   LiveStartCheck,
   LiveStatusSnapshot,
   LogEvent,
@@ -211,6 +212,38 @@ export function runLivePreflight(): Promise<LiveOrderPreflightResult> {
   return request("/api/live/preflight", { method: "POST" });
 }
 
+export function startLiveAuto(): Promise<LiveStatusSnapshot> {
+  return request("/api/live/auto/start", {
+    method: "POST",
+    body: JSON.stringify({ confirm_testnet_auto: true })
+  });
+}
+
+export function stopLiveAuto(): Promise<LiveStatusSnapshot> {
+  return request("/api/live/auto/stop", { method: "POST" });
+}
+
+export function engageLiveKillSwitch(reason = "operator_engaged"): Promise<LiveStatusSnapshot> {
+  return request("/api/live/kill-switch/engage", {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function releaseLiveKillSwitch(reason = "operator_released"): Promise<LiveStatusSnapshot> {
+  return request("/api/live/kill-switch/release", {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function configureLiveRiskProfile(payload: LiveRiskProfile): Promise<LiveStatusSnapshot> {
+  return request("/api/live/risk-profile", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getLivePreflights(limit = 50): Promise<LiveOrderPreflightResult[]> {
   return request(`/api/live/preflights?limit=${limit}`);
 }
@@ -229,6 +262,16 @@ export function cancelLiveOrder(orderRef: string, confirmTestnet = true): Promis
   });
 }
 
+export function cancelLiveOrderWithPayload(
+  orderRef: string,
+  payload: { confirm_testnet: boolean; confirm_mainnet_canary?: boolean; confirmation_text?: string | null }
+): Promise<LiveCancelResult> {
+  return request(`/api/live/orders/${encodeURIComponent(orderRef)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ order_ref: orderRef, ...payload })
+  });
+}
+
 export function cancelAllLiveOrders(confirmTestnet = true): Promise<LiveCancelResult[]> {
   return request("/api/live/cancel-all", {
     method: "POST",
@@ -236,10 +279,32 @@ export function cancelAllLiveOrders(confirmTestnet = true): Promise<LiveCancelRe
   });
 }
 
+export function cancelAllLiveOrdersWithPayload(payload: {
+  confirm_testnet: boolean;
+  confirm_mainnet_canary?: boolean;
+  confirmation_text?: string | null;
+}): Promise<LiveCancelResult[]> {
+  return request("/api/live/cancel-all", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function flattenLivePosition(confirmTestnet = true): Promise<LiveFlattenResult> {
   return request("/api/live/flatten", {
     method: "POST",
     body: JSON.stringify({ confirm_testnet: confirmTestnet })
+  });
+}
+
+export function flattenLivePositionWithPayload(payload: {
+  confirm_testnet: boolean;
+  confirm_mainnet_canary?: boolean;
+  confirmation_text?: string | null;
+}): Promise<LiveFlattenResult> {
+  return request("/api/live/flatten", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 

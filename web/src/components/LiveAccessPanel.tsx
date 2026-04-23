@@ -4,21 +4,29 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   armLive,
   cancelAllLiveOrders,
+  cancelAllLiveOrdersWithPayload,
   cancelLiveOrder,
+  cancelLiveOrderWithPayload,
+  configureLiveRiskProfile,
   createLiveCredential,
   deleteLiveCredential,
   disarmLive,
+  engageLiveKillSwitch,
   executeLivePreview,
   flattenLivePosition,
+  flattenLivePositionWithPayload,
   getLiveIntentPreview,
   listLiveCredentials,
   liveStartCheck,
   refreshLiveReadiness,
   refreshLiveShadow,
+  releaseLiveKillSwitch,
   runLivePreflight,
   selectLiveCredential,
   setLiveModePreference,
+  startLiveAuto,
   startLiveShadow,
+  stopLiveAuto,
   stopLiveShadow,
   updateLiveCredential,
   validateLiveCredential
@@ -34,6 +42,7 @@ import type {
   LiveOrderPreflightResult,
   LiveOrderPreview,
   LiveOrderType,
+  LiveRiskProfile,
   LiveStatusSnapshot
 } from "../types";
 import { Panel } from "./Panel";
@@ -55,6 +64,7 @@ export function LiveAccessPanel() {
   const [replaceSecrets, setReplaceSecrets] = useState(false);
   const [orderType, setOrderType] = useState<LiveOrderType>("MARKET");
   const [limitPrice, setLimitPrice] = useState("");
+  const [mainnetConfirmText, setMainnetConfirmText] = useState("");
 
   const credentialsQuery = useQuery({
     queryKey: ["live-credentials"],
@@ -176,9 +186,42 @@ export function LiveAccessPanel() {
     },
     onError: (error) => notifyCommandError(addToast, "live_start_check", error)
   });
+  const killEngageMutation = useLiveStatusMutation(
+    () => engageLiveKillSwitch("operator_engaged"),
+    "live_kill_switch_engage",
+    setLiveStatus,
+    addToast
+  );
+  const killReleaseMutation = useLiveStatusMutation(
+    () => releaseLiveKillSwitch("operator_released"),
+    "live_kill_switch_release",
+    setLiveStatus,
+    addToast
+  );
+  const autoStartMutation = useLiveStatusMutation(startLiveAuto, "live_auto_start", setLiveStatus, addToast);
+  const autoStopMutation = useLiveStatusMutation(stopLiveAuto, "live_auto_stop", setLiveStatus, addToast);
+  const riskProfileMutation = useLiveStatusMutation(
+    () => configureLiveRiskProfile(defaultRiskProfile(liveStatus)),
+    "live_risk_profile",
+    setLiveStatus,
+    addToast
+  );
   const executeMutation = useMutation({
     mutationFn: () => {
-      const intent = useAppStore.getState().liveStatus?.intent_preview?.intent;
+      const current = useAppStore.getState().liveStatus;
+      const intent = current?.intent_preview?.intent;
+      if (current?.environment === "mainnet") {
+        const required = current.mainnet_canary.required_confirmation;
+        if (!required || mainnetConfirmText !== required) {
+          throw new Error(`MAINNET canary requires exact confirmation: ${required ?? "unavailable"}`);
+        }
+        return executeLivePreview({
+          intent_id: intent?.id ?? null,
+          confirm_testnet: false,
+          confirm_mainnet_canary: true,
+          confirmation_text: mainnetConfirmText
+        });
+      }
       const confirmed = window.confirm(
         "Submit the displayed preview as a real TESTNET Binance Futures order? This is not mainnet, but it is an actual testnet exchange order."
       );
@@ -201,6 +244,19 @@ export function LiveAccessPanel() {
   });
   const cancelMutation = useMutation({
     mutationFn: (orderRef: string) => {
+      const current = useAppStore.getState().liveStatus;
+      if (current?.environment === "mainnet") {
+        const order = current.execution.recent_orders.find((item) => item.id === orderRef || item.client_order_id === orderRef);
+        const required = order ? `CANCEL MAINNET ${order.symbol} ${order.client_order_id}` : "";
+        if (!required || mainnetConfirmText !== required) {
+          throw new Error(`MAINNET canary cancel requires exact confirmation: ${required || "unavailable"}`);
+        }
+        return cancelLiveOrderWithPayload(orderRef, {
+          confirm_testnet: false,
+          confirm_mainnet_canary: true,
+          confirmation_text: mainnetConfirmText
+        });
+      }
       const confirmed = window.confirm("Cancel this TESTNET Binance Futures order?");
       if (!confirmed) {
         throw new Error("TESTNET cancel cancelled by operator.");
@@ -221,6 +277,19 @@ export function LiveAccessPanel() {
   });
   const cancelAllMutation = useMutation({
     mutationFn: () => {
+      const current = useAppStore.getState().liveStatus;
+      if (current?.environment === "mainnet") {
+        const symbol = useAppStore.getState().activeSymbol;
+        const required = symbol ? `CANCEL ALL MAINNET ${symbol}` : "";
+        if (!required || mainnetConfirmText !== required) {
+          throw new Error(`MAINNET canary cancel-all requires exact confirmation: ${required || "unavailable"}`);
+        }
+        return cancelAllLiveOrdersWithPayload({
+          confirm_testnet: false,
+          confirm_mainnet_canary: true,
+          confirmation_text: mainnetConfirmText
+        });
+      }
       const confirmed = window.confirm("Cancel all open TESTNET orders for the active symbol?");
       if (!confirmed) {
         throw new Error("TESTNET cancel-all cancelled by operator.");
@@ -239,6 +308,19 @@ export function LiveAccessPanel() {
   });
   const flattenMutation = useMutation({
     mutationFn: () => {
+      const current = useAppStore.getState().liveStatus;
+      if (current?.environment === "mainnet") {
+        const symbol = useAppStore.getState().activeSymbol;
+        const required = symbol ? `FLATTEN MAINNET ${symbol}` : "";
+        if (!required || mainnetConfirmText !== required) {
+          throw new Error(`MAINNET canary flatten requires exact confirmation: ${required || "unavailable"}`);
+        }
+        return flattenLivePositionWithPayload({
+          confirm_testnet: false,
+          confirm_mainnet_canary: true,
+          confirmation_text: mainnetConfirmText
+        });
+      }
       const confirmed = window.confirm(
         "Flatten the active-symbol TESTNET position? This cancels open active-symbol orders first, then submits a reduce-only MARKET close if safe."
       );
@@ -277,6 +359,11 @@ export function LiveAccessPanel() {
     shadowRefreshMutation.isPending ||
     previewMutation.isPending ||
     preflightMutation.isPending ||
+    killEngageMutation.isPending ||
+    killReleaseMutation.isPending ||
+    autoStartMutation.isPending ||
+    autoStopMutation.isPending ||
+    riskProfileMutation.isPending ||
     executeMutation.isPending ||
     cancelMutation.isPending ||
     cancelAllMutation.isPending ||
@@ -311,6 +398,13 @@ export function LiveAccessPanel() {
             <Metric label="Live State" value={stateLabel(liveStatus.state)} />
             <Metric label="Environment" value={liveStatus.environment.toUpperCase()} />
             <Metric label="Armed" value={liveStatus.armed ? "ARMED READ-ONLY" : "DISARMED"} />
+            <Metric
+              label="Kill Switch"
+              value={liveStatus.kill_switch.engaged ? "KILL SWITCH ENGAGED" : "KILL SWITCH CLEAR"}
+            />
+            <Metric label="Auto Executor" value={autoMetric(liveStatus)} />
+            <Metric label="Risk Profile" value={riskMetric(liveStatus)} />
+            <Metric label="Mainnet Canary" value={mainnetCanaryMetric(liveStatus)} />
             <Metric label="Shadow" value={shadowMetric(liveStatus)} />
             <Metric label="Preflight" value={preflightMetric(liveStatus)} />
             <Metric label="Execution" value={executionMetric(liveStatus)} />
@@ -400,6 +494,25 @@ export function LiveAccessPanel() {
                 placeholder={orderType === "LIMIT" ? "Required for LIMIT" : "n/a for MARKET"}
               />
             </Field>
+            <Field label="Mainnet Confirmation">
+              <input
+                aria-label="Mainnet Canary Confirmation"
+                value={mainnetConfirmText}
+                disabled={busy || liveStatus.environment !== "mainnet"}
+                autoComplete="off"
+                onChange={(event) => setMainnetConfirmText(event.target.value)}
+                placeholder={
+                  liveStatus.environment === "mainnet"
+                    ? (liveStatus.mainnet_canary.required_confirmation ?? "Build a preview to see required text")
+                    : "n/a for TESTNET"
+                }
+              />
+              <small>
+                {liveStatus.environment === "mainnet"
+                  ? `Required: ${liveStatus.mainnet_canary.required_confirmation ?? "unavailable until preview is ready"}`
+                  : "MAINNET canary controls stay inactive in TESTNET."}
+              </small>
+            </Field>
           </div>
 
           <div className="action-row">
@@ -460,21 +573,47 @@ export function LiveAccessPanel() {
           </div>
 
           <div className="action-row">
+            <button type="button" disabled={busy || liveStatus.kill_switch.engaged} onClick={() => killEngageMutation.mutate(undefined)}>
+              Engage Kill Switch
+            </button>
+            <button type="button" disabled={busy || !liveStatus.kill_switch.engaged} onClick={() => killReleaseMutation.mutate(undefined)}>
+              Release Kill Switch
+            </button>
+            <button type="button" disabled={busy || liveStatus.risk_profile.configured} onClick={() => riskProfileMutation.mutate(undefined)}>
+              Configure Conservative Risk Profile
+            </button>
+            <button
+              type="button"
+              disabled={busy || liveStatus.environment !== "testnet" || liveStatus.auto_executor.state === "running"}
+              onClick={() => autoStartMutation.mutate(undefined)}
+            >
+              Start TESTNET Auto
+            </button>
+            <button
+              type="button"
+              disabled={busy || liveStatus.auto_executor.state !== "running"}
+              onClick={() => autoStopMutation.mutate(undefined)}
+            >
+              Stop TESTNET Auto
+            </button>
+          </div>
+
+          <div className="action-row">
             <button
               type="button"
               disabled={busy || !liveStatus.execution.can_submit || !liveStatus.intent_preview?.intent}
               onClick={() => executeMutation.mutate()}
             >
-              Execute TESTNET Preview
+              {liveStatus.environment === "mainnet" ? "Execute MAINNET Canary Preview" : "Execute TESTNET Preview"}
             </button>
             <button type="button" disabled={busy || !openOrder} onClick={() => openOrder && cancelMutation.mutate(openOrder.id)}>
-              Cancel Open TESTNET Order
+              {liveStatus.environment === "mainnet" ? "Cancel Open MAINNET Canary Order" : "Cancel Open TESTNET Order"}
             </button>
             <button type="button" disabled={busy || !openOrder} onClick={() => cancelAllMutation.mutate()}>
               Cancel All Active-Symbol Orders
             </button>
-            <button type="button" disabled={busy || liveStatus.environment !== "testnet"} onClick={() => flattenMutation.mutate()}>
-              Flatten TESTNET Position
+            <button type="button" disabled={busy} onClick={() => flattenMutation.mutate()}>
+              {liveStatus.environment === "mainnet" ? "Flatten MAINNET Canary Position" : "Flatten TESTNET Position"}
             </button>
           </div>
 
@@ -556,7 +695,9 @@ function StatusLists({
     ...status.readiness.blocking_reasons,
     ...status.reconciliation.blocking_reasons,
     ...(status.intent_preview?.blocking_reasons ?? []),
-    ...status.execution.blocking_reasons
+    ...status.execution.blocking_reasons,
+    ...status.auto_executor.blocking_reasons,
+    ...status.mainnet_canary.blocking_reasons
   ]);
   const warnings = unique([...status.readiness.warnings, ...status.reconciliation.warnings, ...status.execution.warnings]);
   const shadow = status.reconciliation.shadow;
@@ -593,6 +734,39 @@ function StatusLists({
           <span>{warnings.length > 0 ? warnings.join(", ") : "NONE"}</span>
         </div>
         <div className="list-item">
+          <strong>KILL SWITCH / RISK</strong>
+          <span>
+            {status.kill_switch.engaged
+              ? `KILL SWITCH ENGAGED · ${status.kill_switch.reason ?? "no reason provided"}`
+              : "KILL SWITCH CLEAR"}
+          </span>
+          <span>
+            {status.risk_profile.configured
+              ? `${status.risk_profile.profile_name ?? "configured"} · max order ${status.risk_profile.limits.max_notional_per_order} · max leverage ${status.risk_profile.limits.max_leverage}`
+              : "Explicit operator risk profile is required before MAINNET canary readiness."}
+          </span>
+        </div>
+        <div className="list-item">
+          <strong>AUTO EXECUTOR</strong>
+          <span>
+            {status.auto_executor.state.toUpperCase()} · {status.auto_executor.environment.toUpperCase()} ·{" "}
+            {status.auto_executor.order_type}
+          </span>
+          <span>
+            {status.auto_executor.last_message ??
+              "TESTNET auto consumes closed-candle signals only and suppresses duplicate candle intents."}
+          </span>
+        </div>
+        <div className="list-item">
+          <strong>MAINNET CANARY</strong>
+          <span>{mainnetCanaryMetric(status)}</span>
+          <span>
+            {status.mainnet_canary.required_confirmation
+              ? `Exact confirmation required: ${status.mainnet_canary.required_confirmation}`
+              : "Mainnet is disabled by default and requires server canary enablement plus a configured risk profile."}
+          </span>
+        </div>
+        <div className="list-item">
           <strong>SYMBOL RULES</strong>
           <span>
             {status.symbol_rules
@@ -625,8 +799,13 @@ function StatusLists({
           <strong>ACCOUNT SNAPSHOT</strong>
           <span>
             {status.account_snapshot
-              ? `available ${formatNumber(status.account_snapshot.available_balance)} · positions ${status.account_snapshot.positions.length}`
+              ? `available ${formatNumber(status.account_snapshot.available_balance)} · positions ${status.account_snapshot.positions.length} · position mode ${status.account_snapshot.position_mode ?? "unknown"} · multi-assets ${status.account_snapshot.multi_assets_margin === true ? "on" : "off"}`
               : "MISSING"}
+          </span>
+          <span>
+            {status.account_snapshot?.account_mode_checked_at
+              ? `account mode checked ${formatTime(status.account_snapshot.account_mode_checked_at)}`
+              : "dedicated position/multi-assets checks have not completed"}
           </span>
         </div>
         <div className="list-item">
@@ -641,8 +820,8 @@ function StatusLists({
         </div>
         <div className="list-item">
           <strong>LIVE ORDER STATE</strong>
-          <span>{lastOrder ? orderSummary(lastOrder) : "NO TESTNET ORDER SUBMITTED"}</span>
-          <span>{lastOrder?.last_error ?? "Authoritative lifecycle follows user-data stream and REST repair."}</span>
+          <span>{lastOrder ? orderSummary(lastOrder) : "NO LIVE ORDER SUBMITTED"}</span>
+          <span>{lastOrder?.last_error ?? "Submissions use ACK; user-data stream and recent-window REST repair define final truth."}</span>
         </div>
         <div className="list-item">
           <strong>LIVE FILL STATE</strong>
@@ -690,6 +869,10 @@ function stateLabel(state: string): string {
       return "PREFLIGHT BLOCKED";
     case "testnet_execution_ready":
       return "TESTNET EXECUTION READY";
+    case "testnet_auto_ready":
+      return "TESTNET AUTO READY";
+    case "testnet_auto_running":
+      return "TESTNET AUTO RUNNING";
     case "testnet_submit_pending":
       return "ORDER SUBMIT PENDING";
     case "testnet_order_open":
@@ -706,6 +889,12 @@ function stateLabel(state: string): string {
       return "EXECUTION BLOCKED";
     case "mainnet_execution_blocked":
       return "MAINNET EXECUTION BLOCKED";
+    case "mainnet_canary_ready":
+      return "MAINNET CANARY READY";
+    case "mainnet_manual_execution_enabled":
+      return "MAINNET MANUAL EXECUTION ENABLED";
+    case "kill_switch_engaged":
+      return "KILL SWITCH ENGAGED";
     case "execution_not_implemented":
       return "EXECUTION NOT IMPLEMENTED";
     default:
@@ -715,12 +904,57 @@ function stateLabel(state: string): string {
 
 function executionMetric(status: LiveStatusSnapshot): string {
   if (status.environment === "mainnet") {
+    if (status.mainnet_canary.manual_execution_enabled) {
+      return "MAINNET MANUAL EXECUTION ENABLED";
+    }
+    if (status.mainnet_canary.canary_ready) {
+      return "MAINNET CANARY READY";
+    }
     return "MAINNET EXECUTION BLOCKED";
   }
   if (status.execution.can_submit) {
     return "TESTNET EXECUTION READY";
   }
   return stateLabel(status.execution.state);
+}
+
+function autoMetric(status: LiveStatusSnapshot): string {
+  if (status.auto_executor.state === "running") {
+    return "TESTNET AUTO RUNNING";
+  }
+  if (status.auto_executor.state === "ready") {
+    return "TESTNET AUTO READY";
+  }
+  if (status.auto_executor.state === "blocked") {
+    return `AUTO BLOCKED · ${status.auto_executor.blocking_reasons.join(", ") || "reason unavailable"}`;
+  }
+  if (status.auto_executor.state === "degraded") {
+    return "AUTO DEGRADED";
+  }
+  return "AUTO STOPPED";
+}
+
+function riskMetric(status: LiveStatusSnapshot): string {
+  if (!status.risk_profile.configured) {
+    return "RISK PROFILE REQUIRED";
+  }
+  return `${status.risk_profile.profile_name ?? "CONFIGURED"} · max ${status.risk_profile.limits.max_notional_per_order}`;
+}
+
+function mainnetCanaryMetric(status: LiveStatusSnapshot): string {
+  if (!status.mainnet_canary.enabled_by_server) {
+    return "MAINNET CANARY DISABLED BY SERVER";
+  }
+  if (!status.mainnet_canary.risk_profile_configured) {
+    return "MAINNET CANARY NEEDS RISK PROFILE";
+  }
+  if (status.mainnet_canary.manual_execution_enabled) {
+    return "MAINNET MANUAL EXECUTION ENABLED";
+  }
+  if (status.mainnet_canary.canary_ready) {
+    return "MAINNET CANARY READY";
+  }
+  return `MAINNET CANARY BLOCKED · ${status.mainnet_canary.blocking_reasons.join(", ") || "gates incomplete"}`;
 }
 
 function shadowMetric(status: LiveStatusSnapshot): string {
@@ -749,7 +983,9 @@ function intentSummary(preview: LiveOrderPreview | null): string {
   const intent = preview.intent;
   const price = intent.price ? ` @ ${intent.price}` : "";
   const notes = intent.validation_notes.length > 0 ? ` · ${intent.validation_notes.join("; ")}` : "";
-  return `${intent.side} ${intent.order_type} ${intent.symbol} qty ${intent.quantity}${price} · TESTNET ONLY · ${intent.can_preflight ? "CAN PREFLIGHT" : "PREFLIGHT BLOCKED"} · ${intent.can_execute_now ? "CAN EXECUTE IF GATES PASS" : "EXECUTION BLOCKED"}${notes}`;
+  const executionScope =
+    intent.environment === "mainnet" ? "MAINNET CANARY GATED" : "TESTNET EXECUTION GATED";
+  return `${intent.side} ${intent.order_type} ${intent.symbol} qty ${intent.quantity}${price} · ${executionScope} · ${intent.can_preflight ? "CAN PREFLIGHT" : "PREFLIGHT BLOCKED"} · ${intent.can_execute_now ? "CAN EXECUTE IF GATES PASS" : "EXECUTION BLOCKED"}${notes}`;
 }
 
 function preflightSummary(result: LiveOrderPreflightResult | null): string {
@@ -771,13 +1007,38 @@ function preflightMessage(result: LiveOrderPreflightResult): string {
 
 function orderSummary(order: LiveOrderRecord): string {
   const price = order.price ? ` @ ${order.price}` : "";
-  return `${order.side} ${order.order_type} ${order.symbol} qty ${order.quantity}${price} · ${order.status.toUpperCase()} · filled ${order.executed_qty}`;
+  const response = order.response_type ? ` · response ${order.response_type}` : "";
+  const expire = order.expire_reason ? ` · expire ${order.expire_reason}` : "";
+  return `${order.side} ${order.order_type} ${order.symbol} qty ${order.quantity}${price} · ${order.status.toUpperCase()} · filled ${order.executed_qty}${response}${expire}`;
 }
 
 function isTerminalOrder(order: LiveOrderRecord): boolean {
-  return order.status === "filled" || order.status === "canceled" || order.status === "rejected" || order.status === "expired";
+  return (
+    order.status === "filled" ||
+    order.status === "canceled" ||
+    order.status === "rejected" ||
+    order.status === "expired" ||
+    order.status === "expired_in_match"
+  );
 }
 
 function unique<T>(items: T[]): T[] {
   return Array.from(new Set(items));
+}
+
+function defaultRiskProfile(status: LiveStatusSnapshot | null): LiveRiskProfile {
+  return {
+    configured: true,
+    profile_name: status?.environment === "mainnet" ? "mainnet-canary-conservative" : "testnet-conservative",
+    limits: {
+      max_notional_per_order: "50",
+      max_open_notional_active_symbol: "50",
+      max_leverage: "3",
+      max_orders_per_session: 5,
+      max_fills_per_session: 10,
+      max_consecutive_rejections: 2,
+      max_daily_realized_loss: "25"
+    },
+    updated_at: Date.now()
+  };
 }

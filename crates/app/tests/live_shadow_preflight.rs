@@ -1,20 +1,31 @@
 mod support;
 
+use std::sync::atomic::Ordering;
+
 use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceOptions};
 use relxen_domain::{
-    AsoMode, CreateLiveCredentialRequest, LiveBlockingReason, LiveCancelRequest,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveOrderSide,
-    LiveOrderType, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowStreamState,
+    AsoMode, CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
+    LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
+    LiveExecutionRequest, LiveKillSwitchRequest, LiveOrderSide, LiveOrderType, LiveRiskLimits,
+    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowStreamState,
     LiveUserDataEvent, Settings, Symbol, Timeframe,
 };
 
 use support::{
-    arc, candle_with_bull_at_open_time, latest_closed_open_time, FakeLiveExchange, MockRepository,
-    SequenceMarket, StaticMetrics, TestSecretStore,
+    arc, candle_with_bull_at_open_time, latest_closed_open_time, stream_event, FakeLiveExchange,
+    MockRepository, SequenceMarket, StaticMetrics, TestSecretStore,
 };
 
 async fn live_shadow_service(
     exchange: std::sync::Arc<FakeLiveExchange>,
+) -> std::sync::Arc<AppService> {
+    live_shadow_service_with(exchange, Vec::new(), ServiceOptions::default()).await
+}
+
+async fn live_shadow_service_with(
+    exchange: std::sync::Arc<FakeLiveExchange>,
+    subscriptions: Vec<Vec<Result<relxen_app::MarketStreamEvent, relxen_app::AppError>>>,
+    options: ServiceOptions,
 ) -> std::sync::Arc<AppService> {
     let repository = arc(MockRepository::default());
     repository
@@ -22,6 +33,7 @@ async fn live_shadow_service(
             aso_length: 2,
             aso_mode: AsoMode::Intrabar,
             auto_restart_on_apply: false,
+            paper_enabled: false,
             ..Settings::default()
         })
         .await
@@ -47,14 +59,14 @@ async fn live_shadow_service(
     let service = AppService::new_with_live(
         AppMetadata::default(),
         repository,
-        arc(SequenceMarket::new(Vec::new(), vec![history])),
+        arc(SequenceMarket::new(subscriptions, vec![history])),
         LiveDependencies::new(arc(TestSecretStore::default()), exchange),
         arc(StaticMetrics),
         arc(relxen_app::NoopPublisher),
         ServiceOptions {
             history_limit: 3,
             auto_start: false,
-            ..ServiceOptions::default()
+            ..options
         },
     );
     service.initialize().await.unwrap();
@@ -77,6 +89,41 @@ async fn create_valid_credential(service: &AppService) {
         .unwrap();
     assert_eq!(validation.status, LiveCredentialValidationStatus::Valid);
     service.refresh_live_readiness().await.unwrap();
+}
+
+async fn create_valid_credential_for(service: &AppService, environment: LiveEnvironment) {
+    let credential = service
+        .create_live_credential(CreateLiveCredentialRequest {
+            alias: format!("{environment}-shadow"),
+            environment,
+            api_key: "abcd1234efgh5678".to_string(),
+            api_secret: "secret".to_string(),
+        })
+        .await
+        .unwrap();
+    let validation = service
+        .validate_live_credential(credential.id)
+        .await
+        .unwrap();
+    assert_eq!(validation.status, LiveCredentialValidationStatus::Valid);
+    service.refresh_live_readiness().await.unwrap();
+}
+
+fn permissive_risk_profile() -> LiveRiskProfile {
+    LiveRiskProfile {
+        configured: true,
+        profile_name: Some("test-canary-risk".to_string()),
+        limits: LiveRiskLimits {
+            max_notional_per_order: "1000".to_string(),
+            max_open_notional_active_symbol: "1000".to_string(),
+            max_leverage: "10".to_string(),
+            max_orders_per_session: 10,
+            max_fills_per_session: 20,
+            max_consecutive_rejections: 3,
+            max_daily_realized_loss: "250".to_string(),
+        },
+        updated_at: relxen_app::now_ms(),
+    }
 }
 
 #[tokio::test]
@@ -187,19 +234,24 @@ async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
         .execute_live_current_preview(LiveExecutionRequest {
             intent_id: Some(intent_id),
             confirm_testnet: true,
+            confirm_mainnet_canary: false,
+            confirmation_text: None,
         })
         .await
         .unwrap();
 
     assert!(executed.accepted);
     let order = executed.order.unwrap();
-    assert_eq!(order.status.as_str(), "working");
+    assert_eq!(order.status.as_str(), "accepted");
+    assert_eq!(order.response_type.as_deref(), Some("ACK"));
     assert_eq!(service.list_live_orders(10).await.unwrap().len(), 1);
 
     let canceled = service
         .cancel_live_order(LiveCancelRequest {
             order_ref: order.id,
             confirm_testnet: true,
+            confirm_mainnet_canary: false,
+            confirmation_text: None,
         })
         .await
         .unwrap();
@@ -208,6 +260,106 @@ async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
         canceled.order.unwrap().status.as_str(),
         relxen_domain::LiveOrderStatus::Canceled.as_str()
     );
+}
+
+#[tokio::test]
+async fn kill_switch_blocks_new_execution_but_leaves_cancel_available() {
+    let exchange = arc(FakeLiveExchange::default());
+    let service = live_shadow_service(exchange).await;
+    create_valid_credential(&service).await;
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Market, None)
+        .await
+        .unwrap();
+
+    service
+        .engage_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test_kill".to_string()),
+        })
+        .await
+        .unwrap();
+    let result = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: preview.intent.map(|intent| intent.id),
+            confirm_testnet: true,
+            confirm_mainnet_canary: false,
+            confirmation_text: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(!result.accepted);
+    assert_eq!(
+        result.blocking_reason,
+        Some(LiveBlockingReason::KillSwitchEngaged)
+    );
+    assert!(service.live_status().await.unwrap().kill_switch.engaged);
+}
+
+#[tokio::test]
+async fn mainnet_canary_requires_server_gate_risk_profile_and_exact_confirmation() {
+    let service = live_shadow_service_with(
+        arc(FakeLiveExchange::default()),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .build_live_intent_preview(LiveOrderType::Market, None)
+        .await
+        .unwrap();
+
+    let blocked = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: None,
+            confirm_testnet: false,
+            confirm_mainnet_canary: true,
+            confirmation_text: Some("wrong".to_string()),
+        })
+        .await
+        .unwrap();
+    assert!(!blocked.accepted);
+    assert_eq!(
+        blocked.blocking_reason,
+        Some(LiveBlockingReason::MainnetCanaryRiskProfileMissing)
+    );
+
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    let status = service.live_status().await.unwrap();
+    assert!(status.mainnet_canary.enabled_by_server);
+    assert!(status.mainnet_canary.risk_profile_configured);
+    let confirmation = status
+        .mainnet_canary
+        .required_confirmation
+        .expect("mainnet canary confirmation should be generated");
+
+    let result = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: None,
+            confirm_testnet: false,
+            confirm_mainnet_canary: true,
+            confirmation_text: Some(confirmation),
+        })
+        .await
+        .unwrap();
+
+    assert!(result.accepted);
+    let order = result
+        .order
+        .expect("mainnet canary order should be accepted by fake exchange");
+    assert_eq!(order.environment, LiveEnvironment::Mainnet);
+    assert_eq!(order.response_type.as_deref(), Some("ACK"));
 }
 
 #[tokio::test]
@@ -238,14 +390,112 @@ async fn mainnet_execution_is_explicitly_blocked() {
         .execute_live_current_preview(LiveExecutionRequest {
             intent_id: None,
             confirm_testnet: true,
+            confirm_mainnet_canary: false,
+            confirmation_text: None,
         })
         .await
         .unwrap();
     assert!(!result.accepted);
     assert_eq!(
         result.blocking_reason,
-        Some(LiveBlockingReason::MainnetExecutionBlocked)
+        Some(LiveBlockingReason::MainnetCanaryDisabled)
     );
+}
+
+#[tokio::test]
+async fn forced_user_data_reconnect_repairs_shadow_before_resubscribe() {
+    let exchange = arc(FakeLiveExchange::default());
+    let service = live_shadow_service_with(
+        exchange.clone(),
+        Vec::new(),
+        ServiceOptions {
+            live_user_stream_forced_reconnect_ms: 10,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential(&service).await;
+    service.start_live_shadow().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if exchange.listen_key_creates.load(Ordering::SeqCst) >= 2
+            && exchange.stream_subscriptions.load(Ordering::SeqCst) >= 2
+            && service
+                .live_status()
+                .await
+                .unwrap()
+                .reconciliation
+                .stream
+                .detail
+                .as_deref()
+                == Some("forced 24h user-data reconnect completed")
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(exchange.listen_key_closes.load(Ordering::SeqCst) >= 1);
+    assert!(
+        service
+            .live_status()
+            .await
+            .unwrap()
+            .execution
+            .repair_recent_window_only
+    );
+    service.stop_live_shadow().await.unwrap();
+}
+
+#[tokio::test]
+async fn testnet_auto_executor_submits_closed_candle_signal_once() {
+    let exchange = arc(FakeLiveExchange::default());
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service = live_shadow_service_with(
+        exchange.clone(),
+        vec![vec![Ok(event.clone()), Ok(event)]],
+        ServiceOptions::default(),
+    )
+    .await;
+    create_valid_credential(&service).await;
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    let auto_status = service
+        .start_live_auto_executor(LiveAutoExecutorRequest {
+            confirm_testnet_auto: true,
+        })
+        .await
+        .unwrap()
+        .auto_executor;
+    assert_eq!(auto_status.state, LiveAutoExecutorStateKind::Running);
+
+    service.start_runtime().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if !exchange.submitted_orders.lock().await.is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let signals = service.list_signals(10).await.unwrap();
+            let auto = service.live_status().await.unwrap().auto_executor;
+            panic!("timed out waiting for auto order; signals={signals:?}; auto={auto:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    service.stop_runtime().await.unwrap();
+
+    let submitted = exchange.submitted_orders.lock().await.clone();
+    assert_eq!(submitted.len(), 1);
+    let status = service.live_status().await.unwrap().auto_executor;
+    assert_eq!(status.last_signal_open_time, Some(open_time));
+    assert_eq!(status.last_order_id, Some(submitted[0].id.clone()));
+    assert_eq!(status.blocking_reasons, Vec::<LiveBlockingReason>::new());
 }
 
 #[tokio::test]
@@ -276,6 +526,9 @@ async fn user_data_order_trade_update_records_authoritative_fill() {
                 commission: Some("0.04".to_string()),
                 commission_asset: Some("USDT".to_string()),
                 trade_id: Some("123".to_string()),
+                self_trade_prevention_mode: None,
+                price_match: None,
+                expire_reason: None,
                 last_update_time: relxen_app::now_ms(),
             },
         ))));

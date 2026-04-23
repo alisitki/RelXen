@@ -6,7 +6,7 @@ Paper Mode V1 is release-candidate complete.
 
 In practical terms, the repository is ready to run locally as a single-user Binance Futures paper-trading dashboard. It can bootstrap market history, compute ASO, generate closed-candle signals, execute paper trades, persist state in SQLite, recover from bounded WebSocket interruptions, and serve the built frontend from the Axum backend.
 
-Paper Mode V1 itself remains a paper-trading release candidate. Post-v1 live work now includes constrained TESTNET-only `MARKET` / `LIMIT` order placement, cancel, cancel-all-active-symbol, and flatten. MAINNET execution is not implemented and remains blocked.
+Paper Mode V1 itself remains a paper-trading release candidate. Post-v1 live work now includes constrained TESTNET `MARKET` / `LIMIT` order placement, cancel, cancel-all-active-symbol, flatten, closed-candle auto-execution, kill switch controls, and default-off manual MAINNET canary execution. This does not change the Paper Mode V1 scope.
 
 ## Included In V1
 
@@ -43,10 +43,10 @@ The runtime is intentionally narrow:
 - Single active symbol.
 - Single timeframe at a time.
 - Single open paper position.
-- Paper execution is the only execution mode.
-- Live execution remains locked/blocked; post-v1 read-only LIVE ACCESS does not place orders.
+- Paper execution is the only v1 execution mode.
+- Post-v1 live execution paths are separate, fail closed, and do not change paper-mode completion.
 
-Post-v1 note: the repository now includes a LIVE ACCESS panel for live foundations, live shadow sync, intent preview, testnet preflight, and constrained TESTNET-only manual execution. It does not change Paper Mode V1 paper-execution scope.
+Post-v1 note: the repository now includes a LIVE ACCESS panel for live foundations, live shadow sync, intent preview, testnet preflight, constrained TESTNET execution, and default-off manual MAINNET canary execution. It does not change Paper Mode V1 paper-execution scope.
 
 ## Evidence
 
@@ -80,7 +80,7 @@ Coverage includes domain ASO/signal/paper-engine tests, app-layer bootstrap/reco
 - Settings/symbol/timeframe rebuilds are deterministic or fail safely.
 - Reconnect recovery cannot silently skip closed-candle transitions in covered scenarios.
 - UI state is textually explicit and does not depend on color alone.
-- Live trading remains disabled and unimplemented.
+- Paper Mode V1 remains complete regardless of post-v1 live canary capabilities.
 
 ## Why This Phase Is Complete
 
@@ -96,4 +96,4 @@ Further work should not expand Paper Mode V1 unless a bug is found. The next pha
 - Preserve exchange symbol-rule validation and decimal intent handling.
 - Preserve account snapshot and shadow reconciliation foundations.
 - Preserve explicit operator arming and fail-closed risk gates.
-- Prove kill-switch behavior, strategy-driven testnet auto-execution, and exchange-authoritative fill reconciliation before mainnet.
+- Run documented testnet auto-execution soak drills before broad mainnet enablement.

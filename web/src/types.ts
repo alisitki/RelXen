@@ -28,6 +28,8 @@ export type LiveRuntimeState =
   | "preflight_ready"
   | "preflight_blocked"
   | "testnet_execution_ready"
+  | "testnet_auto_ready"
+  | "testnet_auto_running"
   | "testnet_submit_pending"
   | "testnet_order_open"
   | "testnet_partially_filled"
@@ -37,6 +39,9 @@ export type LiveRuntimeState =
   | "execution_degraded"
   | "execution_blocked"
   | "mainnet_execution_blocked"
+  | "mainnet_canary_ready"
+  | "mainnet_manual_execution_enabled"
+  | "kill_switch_engaged"
   | "start_blocked"
   | "execution_not_implemented"
   | "error";
@@ -73,6 +78,10 @@ export type LiveBlockingReason =
   | "min_notional"
   | "precision_invalid"
   | "mainnet_execution_blocked"
+  | "mainnet_canary_disabled"
+  | "mainnet_canary_risk_profile_missing"
+  | "mainnet_confirmation_missing"
+  | "mainnet_auto_blocked"
   | "stale_shadow_state"
   | "preview_mismatch"
   | "execution_status_unknown"
@@ -82,6 +91,10 @@ export type LiveBlockingReason =
   | "cancel_failed"
   | "flatten_failed"
   | "kill_switch_engaged"
+  | "risk_limit_exceeded"
+  | "auto_executor_stopped"
+  | "duplicate_signal_suppressed"
+  | "recent_window_repair_only"
   | "execution_not_implemented";
 export type LiveWarning =
   | "validation_stale"
@@ -111,6 +124,8 @@ export type LiveExecutionState =
   | "shadow_only"
   | "preflight_ready"
   | "testnet_execution_ready"
+  | "testnet_auto_ready"
+  | "testnet_auto_running"
   | "testnet_submit_pending"
   | "testnet_order_open"
   | "testnet_partially_filled"
@@ -120,6 +135,9 @@ export type LiveExecutionState =
   | "execution_degraded"
   | "execution_blocked"
   | "mainnet_execution_blocked"
+  | "mainnet_canary_ready"
+  | "mainnet_manual_execution_enabled"
+  | "kill_switch_engaged"
   | "error";
 export type LiveOrderStatus =
   | "local_created"
@@ -132,7 +150,10 @@ export type LiveOrderStatus =
   | "canceled"
   | "rejected"
   | "expired"
+  | "expired_in_match"
   | "unknown_needs_repair";
+export type LiveAutoExecutorStateKind = "stopped" | "ready" | "running" | "blocked" | "degraded";
+export type LiveIntentLockStatus = "created" | "submitted" | "blocked" | "repaired";
 
 export interface AppMetadata {
   app_name: string;
@@ -330,6 +351,8 @@ export interface LiveAccountSnapshot {
   environment: LiveEnvironment;
   can_trade: boolean;
   multi_assets_margin: boolean | null;
+  position_mode: string | null;
+  account_mode_checked_at: number | null;
   total_wallet_balance: number;
   total_margin_balance: number;
   available_balance: number;
@@ -409,6 +432,9 @@ export interface LiveShadowOrder {
   commission?: string | null;
   commission_asset?: string | null;
   trade_id?: string | null;
+  self_trade_prevention_mode?: string | null;
+  price_match?: string | null;
+  expire_reason?: string | null;
   last_update_time: number;
 }
 
@@ -513,8 +539,13 @@ export interface LiveOrderRecord {
   intent_id: string | null;
   intent_hash: string | null;
   source_signal_id: string | null;
+  source_open_time: number | null;
   reason: string;
   payload: Record<string, string>;
+  response_type: string | null;
+  self_trade_prevention_mode: string | null;
+  price_match: string | null;
+  expire_reason: string | null;
   last_error: string | null;
   submitted_at: number;
   updated_at: number;
@@ -547,12 +578,16 @@ export interface LiveExecutionSnapshot {
   recent_orders: LiveOrderRecord[];
   recent_fills: LiveFillRecord[];
   kill_switch_engaged: boolean;
+  repair_recent_window_only: boolean;
+  mainnet_canary_enabled: boolean;
   updated_at: number;
 }
 
 export interface LiveExecutionRequest {
   intent_id?: string | null;
   confirm_testnet: boolean;
+  confirm_mainnet_canary?: boolean;
+  confirmation_text?: string | null;
 }
 
 export interface LiveExecutionResult {
@@ -573,6 +608,8 @@ export interface LiveCancelResult {
 
 export interface LiveCancelAllRequest {
   confirm_testnet: boolean;
+  confirm_mainnet_canary?: boolean;
+  confirmation_text?: string | null;
 }
 
 export interface LiveFlattenResult {
@@ -582,6 +619,56 @@ export interface LiveFlattenResult {
   blocking_reason: LiveBlockingReason | null;
   message: string;
   created_at: number;
+}
+
+export interface LiveKillSwitchState {
+  engaged: boolean;
+  reason: string | null;
+  engaged_at: number | null;
+  released_at: number | null;
+  updated_at: number;
+}
+
+export interface LiveRiskLimits {
+  max_notional_per_order: string;
+  max_open_notional_active_symbol: string;
+  max_leverage: string;
+  max_orders_per_session: number;
+  max_fills_per_session: number;
+  max_consecutive_rejections: number;
+  max_daily_realized_loss: string;
+}
+
+export interface LiveRiskProfile {
+  configured: boolean;
+  profile_name: string | null;
+  limits: LiveRiskLimits;
+  updated_at: number;
+}
+
+export interface LiveAutoExecutorStatus {
+  state: LiveAutoExecutorStateKind;
+  environment: LiveEnvironment;
+  order_type: LiveOrderType;
+  started_at: number | null;
+  stopped_at: number | null;
+  last_signal_id: string | null;
+  last_signal_open_time: number | null;
+  last_intent_hash: string | null;
+  last_order_id: string | null;
+  last_message: string | null;
+  blocking_reasons: LiveBlockingReason[];
+  updated_at: number;
+}
+
+export interface LiveMainnetCanaryStatus {
+  enabled_by_server: boolean;
+  risk_profile_configured: boolean;
+  canary_ready: boolean;
+  manual_execution_enabled: boolean;
+  required_confirmation: string | null;
+  blocking_reasons: LiveBlockingReason[];
+  updated_at: number;
 }
 
 export interface LiveReadinessSnapshot {
@@ -619,6 +706,10 @@ export interface LiveStatusSnapshot {
   recent_preflights: LiveOrderPreflightResult[];
   execution: LiveExecutionSnapshot;
   execution_availability: LiveExecutionAvailability;
+  kill_switch: LiveKillSwitchState;
+  risk_profile: LiveRiskProfile;
+  auto_executor: LiveAutoExecutorStatus;
+  mainnet_canary: LiveMainnetCanaryStatus;
   updated_at: number;
 }
 
@@ -689,6 +780,11 @@ export type OutboundEvent =
   | { type: "live_preflight_result_appended"; payload: LiveOrderPreflightResult }
   | { type: "live_execution_state_updated"; payload: LiveExecutionSnapshot }
   | { type: "live_execution_blocked"; payload: { reason: string } }
+  | { type: "live_kill_switch_updated"; payload: LiveKillSwitchState }
+  | { type: "live_auto_state_updated"; payload: LiveAutoExecutorStatus }
+  | { type: "live_execution_degraded"; payload: { reason: string } }
+  | { type: "live_execution_resynced" }
+  | { type: "live_mainnet_gate_updated"; payload: { enabled: boolean } }
   | { type: "live_order_submitted"; payload: LiveOrderRecord }
   | { type: "live_order_updated"; payload: LiveOrderRecord }
   | { type: "live_fill_appended"; payload: LiveFillRecord }

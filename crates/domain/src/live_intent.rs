@@ -208,22 +208,20 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
         validation_notes: notes,
         blocking_reasons: Vec::new(),
         can_preflight: input.environment == LiveEnvironment::Testnet,
-        can_execute_now: input.environment == LiveEnvironment::Testnet,
+        can_execute_now: true,
         built_at: input.now_ms,
     };
 
-    let mut preview_blocking = Vec::new();
     let mut message =
         "TESTNET PREVIEW READY. Actual placement is testnet-only and gated.".to_string();
     if input.environment != LiveEnvironment::Testnet {
-        preview_blocking.push(LiveBlockingReason::PreflightNotSupportedOnMainnet);
-        message = "Preflight is testnet-only in this batch.".to_string();
+        message = "MAINNET CANARY PREVIEW READY. Preflight is unavailable; execution requires server canary gates and exact operator confirmation.".to_string();
     }
 
     LiveOrderPreview {
         built_at: input.now_ms,
         intent: Some(intent),
-        blocking_reasons: preview_blocking,
+        blocking_reasons: Vec::new(),
         validation_errors: errors,
         message,
     }

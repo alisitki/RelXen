@@ -28,6 +28,7 @@ cargo run -p relxen-server
 - `RELXEN_FRONTEND_DIST`: built frontend directory. Default is `web/dist`.
 - `RELXEN_LOG_LEVEL`: tracing filter. Default is `info,relxen=debug`.
 - `RELXEN_AUTO_START`: whether bootstrap should start the WebSocket runtime. Default is `true`.
+- `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables the manual MAINNET canary path when every other gate passes. Default is `false`; leave it false for normal paper/testnet operation.
 
 ## Database And Migrations
 
@@ -83,7 +84,7 @@ If `resync_required` is emitted, the frontend reloads `/api/bootstrap` and rebui
 
 ## LIVE ACCESS Flow
 
-The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight work, and constrained TESTNET-only manual execution. MAINNET execution remains blocked.
+The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight work, TESTNET manual execution, TESTNET closed-candle auto-execution, kill switch controls, and a manual MAINNET canary path that is disabled by default.
 
 1. Create a credential with alias, environment (`testnet` or `mainnet`), API key, and API secret.
 2. RelXen stores raw secret material in OS secure storage and stores only masked metadata in SQLite.
@@ -94,9 +95,12 @@ The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight 
 7. Use `Start Shadow Sync` to open a Binance USDⓈ-M user-data listenKey stream and maintain a read-only shadow view.
 8. Use `Build Preview` to compute a precision-aware `MARKET` or `LIMIT` order intent from current settings, rules, shadow account state, and the latest closed signal when available.
 9. Use `Run Preflight` to submit the serialized payload to Binance testnet `order/test`. This validates the signed payload but does not place an order.
-10. Use `Execute TESTNET Preview` only when the UI shows `TESTNET EXECUTION READY`. Confirm the browser prompt. This sends a real TESTNET matching-engine order, not a mainnet order.
-11. Use `Cancel Open TESTNET Order` or `Cancel All Active-Symbol Orders` to cancel RelXen-created TESTNET open orders. The backend also requires explicit testnet confirmation.
-12. Use `Flatten TESTNET Position` only when shadow state is coherent. RelXen cancels active-symbol open orders first, then submits a reduce-only MARKET close intent when safe.
+10. Use `Configure Conservative Risk Profile` before any MAINNET canary review. MAINNET canary readiness cannot pass without an explicit operator-configured risk profile.
+11. Use `Execute TESTNET Preview` only when the UI shows `TESTNET EXECUTION READY`. Confirm the browser prompt. This sends a real TESTNET matching-engine order, not a mainnet order.
+12. Use `Start TESTNET Auto` only after shadow sync is fresh and you intentionally want closed-candle ASO signals to submit TESTNET orders. Auto mode is TESTNET-only and suppresses duplicate signal/candle intents.
+13. Use `Engage Kill Switch` to block all new live submissions immediately. Release requires explicit operator action.
+14. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is mainnet, a risk profile is configured, all gates pass, and the displayed exact confirmation text is entered.
+15. Use cancel/cancel-all or flatten only when shadow state is coherent. RelXen cancels active-symbol open orders first for flatten, then submits a reduce-only MARKET close intent when safe.
 
 If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. Never put live API secrets in `.env`, SQLite, frontend storage, logs, or screenshots.
 
@@ -115,13 +119,17 @@ If OS secure storage is unavailable, the UI/API report `secure_store_unavailable
 - `preflight_ready`: an order-intent preview passed local precision/rules checks and may be validated through testnet `order/test`.
 - `preflight_blocked`: a preview or preflight is blocked locally, for example due to stale shadow state, unsupported mode, mainnet preflight, or precision/rule validation failure.
 - `testnet_execution_ready`: a confirmed TESTNET order may be submitted for the displayed preview.
+- `testnet_auto_running`: RelXen is consuming closed-candle signals and may submit TESTNET orders when every execution gate passes.
+- `kill_switch_engaged`: new live submissions are blocked immediately. Cancel/flatten may remain available only when deterministic and safe.
 - `testnet_submit_pending`: RelXen submitted a TESTNET order and is waiting for authoritative exchange reconciliation.
 - `testnet_order_open`: the exchange reports a working TESTNET order.
 - `testnet_partially_filled`: the exchange reports partial fills.
 - `testnet_filled`: the exchange reports the TESTNET order as filled.
 - `testnet_cancel_pending`: RelXen submitted a cancel and is waiting for authoritative exchange reconciliation.
 - `execution_degraded`: submission, stream, or repair state is ambiguous; new submissions fail closed.
-- `mainnet_execution_blocked`: MAINNET order placement and cancel are intentionally unavailable.
+- `mainnet_execution_blocked`: MAINNET execution is disabled by server canary policy or another fail-closed gate.
+- `mainnet_canary_ready`: manual MAINNET canary gates can pass if exact operator confirmation is entered.
+- `mainnet_manual_execution_enabled`: manual MAINNET canary submission is available for the current displayed preview only. MAINNET auto-execution is not available.
 - `start_blocked`: a live start was requested or checked, but current gates block the operation.
 
 To switch back safely, click `Disarm` or set the execution preference to `PAPER MODE`. This does not affect paper wallets or paper positions.
@@ -134,13 +142,32 @@ To switch back safely, click `Disarm` or set the execution preference to `PAPER 
 - `Build Preview`: builds an inspectable intent. Quantity and LIMIT price are rounded with live decimal logic and exchange symbol rules.
 - `Run Preflight`: sends the preview payload to Binance testnet `POST /fapi/v1/order/test`. Mainnet preflight is blocked in this repository state.
 - `Execute TESTNET Preview`: submits the displayed preview to Binance testnet `POST /fapi/v1/order` after explicit confirmation and fail-closed gates.
-- `Cancel Open TESTNET Order`: sends `DELETE /fapi/v1/order` for a RelXen-created TESTNET order.
-- `Cancel All Active-Symbol Orders`: cancels RelXen-created open TESTNET orders for the active symbol only.
-- `Flatten TESTNET Position`: cancels open active-symbol TESTNET orders and submits a reduce-only MARKET close when shadow position state is deterministic.
+- `Execute MAINNET Canary Preview`: submits the displayed preview to Binance mainnet only when the server canary flag is enabled, a risk profile is configured, the exact confirmation text matches, and every normal gate passes.
+- `Start TESTNET Auto`: enables closed-candle strategy-driven TESTNET order submission. Duplicate signal/open-time intents are persisted and suppressed.
+- `Stop TESTNET Auto`: stops strategy-driven TESTNET submissions without stopping paper mode.
+- `Engage Kill Switch`: blocks every new live submission.
+- `Release Kill Switch`: clears the kill switch; other gates still decide readiness.
+- `Cancel Open ... Order`: sends `DELETE /fapi/v1/order` for a RelXen-created order.
+- `Cancel All Active-Symbol Orders`: cancels RelXen-created open orders for the active symbol only.
+- `Flatten ... Position`: cancels open active-symbol orders and submits a reduce-only MARKET close when shadow position state is deterministic.
 
 If the stream expires, disconnects, or cannot be reconciled, the UI should show `SHADOW DEGRADED`, `execution_degraded`, `shadow_stream_down`, or `shadow_state_ambiguous`. Stop and restart shadow sync after checking credentials/connectivity. Do not interpret preflight success as exchange position truth.
 
-After an ambiguous submission or reconnect, do not retry manually until `/api/live/status` shows a coherent order state or a degraded/blocked state with a clear repair outcome. RelXen queries order/open-order/user-trade fallback endpoints when needed and blocks new submissions if status remains unknown.
+RelXen forces user-data stream reconnect plus REST repair before the Binance 24-hour user-data WebSocket lifecycle limit. After an ambiguous submission or reconnect, do not retry manually until `/api/live/status` shows a coherent order state or a degraded/blocked state with a clear repair outcome. Repair is intentionally recent-window only because Binance order/trade query retention is finite; older ambiguity must remain degraded and operator-reviewed.
+
+Real order submissions request `ACK`. `ACK` means Binance accepted the request, not that the order is filled. User-data stream events and recent-window REST repair define final order, fill, account, and position truth.
+
+## MAINNET Canary Procedure
+
+1. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill.
+2. Stop TESTNET auto mode and engage the kill switch before changing credentials or environment.
+3. Set `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` only for the canary run, restart the backend, and verify `/api/live/status` reports canary server enablement.
+4. Select and validate a mainnet credential from OS secure storage.
+5. Configure a conservative risk profile and verify the active symbol is `BTCUSDT` or `BTCUSDC`.
+6. Start shadow sync and verify dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
+7. Build a preview, read the exact required confirmation text, and enter it only if you intend to submit that exact MAINNET order.
+8. Submit one manual canary action only. Wait for user-data/REST reconciliation before any follow-up.
+9. Disable the server canary flag after the drill and restart back into the default blocked state.
 
 ## Common Failure Notes
 

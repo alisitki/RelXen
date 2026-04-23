@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(event_bus.clone()),
         ServiceOptions {
             auto_start: config.auto_start,
+            enable_mainnet_canary_execution: config.enable_mainnet_canary_execution,
             ..ServiceOptions::default()
         },
     );

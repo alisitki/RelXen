@@ -5,9 +5,10 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use relxen_domain::{
-    Candle, LiveAccountShadow, LiveAccountSnapshot, LiveCredentialId, LiveCredentialMetadata,
-    LiveCredentialSecret, LiveCredentialValidationResult, LiveEnvironment, LiveExecutionSnapshot,
-    LiveFillRecord, LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus,
+    Candle, LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAutoExecutorStatus,
+    LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialValidationResult,
+    LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
+    LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile,
     LiveStateRecord, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent,
     Symbol, SystemMetrics, Timeframe, Trade, Wallet,
 };
@@ -86,6 +87,14 @@ pub trait Repository: Send + Sync {
     async fn append_live_preflight(&self, result: &LiveOrderPreflightResult) -> AppResult<()>;
     async fn load_live_execution(&self) -> AppResult<Option<LiveExecutionSnapshot>>;
     async fn save_live_execution(&self, execution: &LiveExecutionSnapshot) -> AppResult<()>;
+    async fn load_live_kill_switch(&self) -> AppResult<LiveKillSwitchState>;
+    async fn save_live_kill_switch(&self, state: &LiveKillSwitchState) -> AppResult<()>;
+    async fn load_live_risk_profile(&self) -> AppResult<LiveRiskProfile>;
+    async fn save_live_risk_profile(&self, profile: &LiveRiskProfile) -> AppResult<()>;
+    async fn load_live_auto_executor(&self) -> AppResult<LiveAutoExecutorStatus>;
+    async fn save_live_auto_executor(&self, status: &LiveAutoExecutorStatus) -> AppResult<()>;
+    async fn get_live_intent_lock(&self, key: &str) -> AppResult<Option<LiveIntentLock>>;
+    async fn upsert_live_intent_lock(&self, lock: &LiveIntentLock) -> AppResult<()>;
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>>;
     async fn get_live_order(&self, order_ref: &str) -> AppResult<Option<LiveOrderRecord>>;
     async fn upsert_live_order(&self, order: &LiveOrderRecord) -> AppResult<()>;
@@ -133,6 +142,16 @@ pub trait LiveExchangePort: Send + Sync {
         environment: LiveEnvironment,
         secret: &LiveCredentialSecret,
     ) -> AppResult<LiveAccountSnapshot>;
+
+    async fn fetch_account_mode(
+        &self,
+        _environment: LiveEnvironment,
+        _secret: &LiveCredentialSecret,
+    ) -> AppResult<LiveAccountModeStatus> {
+        Err(AppError::Exchange(
+            "live account mode adapter is not configured".to_string(),
+        ))
+    }
 
     async fn fetch_symbol_rules(
         &self,

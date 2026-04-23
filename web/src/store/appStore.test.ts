@@ -115,12 +115,58 @@ const baseSnapshot: BootstrapPayload = {
       recent_orders: [],
       recent_fills: [],
       kill_switch_engaged: false,
+      repair_recent_window_only: true,
+      mainnet_canary_enabled: false,
       updated_at: 1
     },
     execution_availability: {
       can_execute_live: false,
       reason: "mainnet_execution_blocked",
       message: "MAINNET execution is blocked; TESTNET execution requires readiness gates."
+    },
+    kill_switch: {
+      engaged: false,
+      reason: null,
+      engaged_at: null,
+      released_at: null,
+      updated_at: 1
+    },
+    risk_profile: {
+      configured: false,
+      profile_name: null,
+      limits: {
+        max_notional_per_order: "50",
+        max_open_notional_active_symbol: "50",
+        max_leverage: "3",
+        max_orders_per_session: 5,
+        max_fills_per_session: 10,
+        max_consecutive_rejections: 2,
+        max_daily_realized_loss: "25"
+      },
+      updated_at: 1
+    },
+    auto_executor: {
+      state: "stopped",
+      environment: "testnet",
+      order_type: "MARKET",
+      started_at: null,
+      stopped_at: null,
+      last_signal_id: null,
+      last_signal_open_time: null,
+      last_intent_hash: null,
+      last_order_id: null,
+      last_message: null,
+      blocking_reasons: ["auto_executor_stopped"],
+      updated_at: 1
+    },
+    mainnet_canary: {
+      enabled_by_server: false,
+      risk_profile_configured: false,
+      canary_ready: false,
+      manual_execution_enabled: false,
+      required_confirmation: null,
+      blocking_reasons: ["mainnet_canary_disabled"],
+      updated_at: 1
     },
     updated_at: 1
   },

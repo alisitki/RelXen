@@ -18,13 +18,14 @@ use relxen_app::{
     NoopPublisher, Repository, ServiceOptions,
 };
 use relxen_domain::{
-    Candle, ConnectionStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
-    LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialValidationResult,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveExecutionSnapshot,
-    LiveFillRecord, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
-    LiveOrderType, LiveReconciliationStatus, LiveStateRecord, LiveSymbolFilterSummary,
-    LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol,
-    SystemMetrics, Timeframe, Trade, Wallet,
+    Candle, ConnectionStatus, LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot,
+    LiveAssetBalance, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
+    LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
+    LiveEnvironment, LiveExecutionRequest, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock,
+    LiveKillSwitchState, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
+    LiveOrderType, LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord,
+    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings,
+    SignalEvent, Symbol, SystemMetrics, Timeframe, Trade, Wallet,
 };
 use relxen_infra::{EventBus, MemorySecretStore};
 use relxen_server::{build_router, RouterState};
@@ -115,6 +116,10 @@ struct InMemoryRepository {
     live_shadow: Mutex<Option<LiveAccountShadow>>,
     live_preflights: Mutex<Vec<LiveOrderPreflightResult>>,
     live_execution: Mutex<Option<LiveExecutionSnapshot>>,
+    live_kill_switch: Mutex<Option<LiveKillSwitchState>>,
+    live_risk_profile: Mutex<Option<LiveRiskProfile>>,
+    live_auto_executor: Mutex<Option<LiveAutoExecutorStatus>>,
+    live_intent_locks: Mutex<Vec<LiveIntentLock>>,
     live_orders: Mutex<Vec<LiveOrderRecord>>,
     live_fills: Mutex<Vec<LiveFillRecord>>,
     fail_clear_trades: bool,
@@ -353,6 +358,68 @@ impl Repository for InMemoryRepository {
         Ok(())
     }
 
+    async fn load_live_kill_switch(&self) -> AppResult<LiveKillSwitchState> {
+        Ok(self
+            .live_kill_switch
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_kill_switch(&self, state: &LiveKillSwitchState) -> AppResult<()> {
+        *self.live_kill_switch.lock().await = Some(state.clone());
+        Ok(())
+    }
+
+    async fn load_live_risk_profile(&self) -> AppResult<LiveRiskProfile> {
+        Ok(self
+            .live_risk_profile
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_risk_profile(&self, profile: &LiveRiskProfile) -> AppResult<()> {
+        *self.live_risk_profile.lock().await = Some(profile.clone());
+        Ok(())
+    }
+
+    async fn load_live_auto_executor(&self) -> AppResult<LiveAutoExecutorStatus> {
+        Ok(self
+            .live_auto_executor
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_live_auto_executor(&self, status: &LiveAutoExecutorStatus) -> AppResult<()> {
+        *self.live_auto_executor.lock().await = Some(status.clone());
+        Ok(())
+    }
+
+    async fn get_live_intent_lock(&self, key: &str) -> AppResult<Option<LiveIntentLock>> {
+        Ok(self
+            .live_intent_locks
+            .lock()
+            .await
+            .iter()
+            .find(|lock| lock.key == key)
+            .cloned())
+    }
+
+    async fn upsert_live_intent_lock(&self, lock: &LiveIntentLock) -> AppResult<()> {
+        let mut locks = self.live_intent_locks.lock().await;
+        if let Some(existing) = locks.iter_mut().find(|item| item.key == lock.key) {
+            *existing = lock.clone();
+        } else {
+            locks.push(lock.clone());
+        }
+        Ok(())
+    }
+
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {
         let mut orders = self.live_orders.lock().await.clone();
         orders.sort_by_key(|order| order.updated_at);
@@ -434,6 +501,8 @@ impl LiveExchangePort for ServerFakeLiveExchange {
             environment,
             can_trade: true,
             multi_assets_margin: Some(false),
+            position_mode: Some("one_way".to_string()),
+            account_mode_checked_at: Some(now_ms()),
             total_wallet_balance: 1000.0,
             total_margin_balance: 1000.0,
             available_balance: 900.0,
@@ -467,6 +536,19 @@ impl LiveExchangePort for ServerFakeLiveExchange {
                 min_qty: Some(0.001),
                 min_notional: Some(100.0),
             },
+            fetched_at: now_ms(),
+        })
+    }
+
+    async fn fetch_account_mode(
+        &self,
+        environment: LiveEnvironment,
+        _secret: &LiveCredentialSecret,
+    ) -> AppResult<LiveAccountModeStatus> {
+        Ok(LiveAccountModeStatus {
+            environment,
+            position_mode: Some("one_way".to_string()),
+            multi_assets_margin: Some(false),
             fetched_at: now_ms(),
         })
     }
@@ -523,11 +605,6 @@ impl LiveExchangePort for ServerFakeLiveExchange {
         _secret: &LiveCredentialSecret,
         payload: &BTreeMap<String, String>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet".to_string(),
-            ));
-        }
         let now = now_ms();
         let client_order_id = payload
             .get("newClientOrderId")
@@ -558,8 +635,13 @@ impl LiveExchangePort for ServerFakeLiveExchange {
             intent_id: None,
             intent_hash: None,
             source_signal_id: None,
+            source_open_time: None,
             reason: "server_fake".to_string(),
             payload: payload.clone(),
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: None,
+            price_match: None,
+            expire_reason: None,
             last_error: None,
             submitted_at: now,
             updated_at: now,
@@ -574,11 +656,6 @@ impl LiveExchangePort for ServerFakeLiveExchange {
         orig_client_order_id: Option<&str>,
         _order_id: Option<&str>,
     ) -> AppResult<LiveOrderRecord> {
-        if environment != LiveEnvironment::Testnet {
-            return Err(AppError::Exchange(
-                "execution_not_supported_on_mainnet".to_string(),
-            ));
-        }
         let now = now_ms();
         let client_order_id = orig_client_order_id
             .unwrap_or("server-client-order")
@@ -602,8 +679,13 @@ impl LiveExchangePort for ServerFakeLiveExchange {
             intent_id: None,
             intent_hash: None,
             source_signal_id: None,
+            source_open_time: None,
             reason: "server_fake".to_string(),
             payload: BTreeMap::new(),
+            response_type: Some("ACK".to_string()),
+            self_trade_prevention_mode: None,
+            price_match: None,
+            expire_reason: None,
             last_error: None,
             submitted_at: now,
             updated_at: now,
@@ -865,6 +947,8 @@ async fn execute_endpoint_submits_testnet_order_and_status_exposes_execution_sta
                     serde_json::to_vec(&LiveExecutionRequest {
                         intent_id: Some(intent_id),
                         confirm_testnet: true,
+                        confirm_mainnet_canary: false,
+                        confirmation_text: None,
                     })
                     .unwrap(),
                 ))
@@ -875,7 +959,8 @@ async fn execute_endpoint_submits_testnet_order_and_status_exposes_execution_sta
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["accepted"], true);
-    assert_eq!(body["order"]["status"], "working");
+    assert_eq!(body["order"]["status"], "accepted");
+    assert_eq!(body["order"]["response_type"], "ACK");
 
     let status_response = router
         .oneshot(
@@ -892,6 +977,128 @@ async fn execute_endpoint_submits_testnet_order_and_status_exposes_execution_sta
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn live_kill_switch_risk_profile_and_auto_endpoints_update_status() {
+    let repository = Arc::new(InMemoryRepository::default());
+    repository
+        .save_settings(&Settings {
+            aso_length: 2,
+            aso_mode: relxen_domain::AsoMode::Intrabar,
+            auto_restart_on_apply: false,
+            paper_enabled: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let service = AppService::new_with_live(
+        AppMetadata::default(),
+        repository,
+        Arc::new(SequenceMarket::new(
+            Vec::new(),
+            vec![recent_closed_window(3, 80.0)],
+        )),
+        LiveDependencies::new(
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(ServerFakeLiveExchange),
+        ),
+        Arc::new(StaticMetrics),
+        Arc::new(NoopPublisher),
+        ServiceOptions {
+            history_limit: 3,
+            auto_start: false,
+            ..ServiceOptions::default()
+        },
+    );
+    service.initialize().await.unwrap();
+    let credential = service
+        .create_live_credential(relxen_domain::CreateLiveCredentialRequest {
+            alias: "testnet".to_string(),
+            environment: LiveEnvironment::Testnet,
+            api_key: "abcd1234efgh5678".to_string(),
+            api_secret: "secret".to_string(),
+        })
+        .await
+        .unwrap();
+    service
+        .validate_live_credential(credential.id)
+        .await
+        .unwrap();
+    service.refresh_live_readiness().await.unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let router = build_router(
+        RouterState {
+            service,
+            event_bus: EventBus::new(16),
+        },
+        std::path::PathBuf::from("/Users/stk/Desktop/RelXen/web/dist"),
+    );
+    let engage = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/kill-switch/engage")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"reason":"api_test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(engage.status(), StatusCode::OK);
+    let body = response_json(engage).await;
+    assert_eq!(body["kill_switch"]["engaged"], true);
+    assert_eq!(body["execution"]["kill_switch_engaged"], true);
+
+    let release = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/kill-switch/release")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"reason":"api_test_release"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(release.status(), StatusCode::OK);
+
+    let risk = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/live/risk-profile")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"configured":true,"profile_name":"api-test","limits":{"max_notional_per_order":"1000","max_open_notional_active_symbol":"1000","max_leverage":"10","max_orders_per_session":10,"max_fills_per_session":20,"max_consecutive_rejections":3,"max_daily_realized_loss":"250"},"updated_at":0}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(risk.status(), StatusCode::OK);
+    let risk_body = response_json(risk).await;
+    assert_eq!(risk_body["risk_profile"]["configured"], true);
+
+    let auto = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/auto/start")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"confirm_testnet_auto":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(auto.status(), StatusCode::OK);
+    let auto_body = response_json(auto).await;
+    assert_eq!(auto_body["auto_executor"]["state"], "running");
 }
 
 #[tokio::test]
