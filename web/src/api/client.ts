@@ -258,7 +258,7 @@ export function executeLivePreview(payload: LiveExecutionRequest): Promise<LiveE
 export function cancelLiveOrder(orderRef: string, confirmTestnet = true): Promise<LiveCancelResult> {
   return request(`/api/live/orders/${encodeURIComponent(orderRef)}/cancel`, {
     method: "POST",
-    body: JSON.stringify({ order_ref: orderRef, confirm_testnet: confirmTestnet })
+    body: JSON.stringify({ confirm_testnet: confirmTestnet })
   });
 }
 
@@ -268,7 +268,7 @@ export function cancelLiveOrderWithPayload(
 ): Promise<LiveCancelResult> {
   return request(`/api/live/orders/${encodeURIComponent(orderRef)}/cancel`, {
     method: "POST",
-    body: JSON.stringify({ order_ref: orderRef, ...payload })
+    body: JSON.stringify(payload)
   });
 }
 

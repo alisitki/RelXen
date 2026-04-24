@@ -24,6 +24,18 @@ pub struct RouterState {
     pub event_bus: EventBus,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct LiveCancelOrderBody {
+    #[serde(default)]
+    order_ref: Option<String>,
+    #[serde(default)]
+    confirm_testnet: bool,
+    #[serde(default)]
+    confirm_mainnet_canary: bool,
+    #[serde(default)]
+    confirmation_text: Option<String>,
+}
+
 pub fn build_router(state: RouterState, frontend_dist: std::path::PathBuf) -> Router {
     let index_file = frontend_dist.join("index.html");
     Router::new()
@@ -465,19 +477,28 @@ async fn execute_live(
 async fn cancel_live_order(
     State(state): State<RouterState>,
     Path(order_ref): Path<String>,
-    body: Option<Json<LiveCancelRequest>>,
+    body: Option<Json<LiveCancelOrderBody>>,
 ) -> Result<Json<relxen_domain::LiveCancelResult>, ApiError> {
-    let confirm_testnet = body
+    let payload = body.map(|Json(payload)| payload);
+    if let Some(body_order_ref) = payload
         .as_ref()
-        .map(|Json(payload)| payload.confirm_testnet)
-        .unwrap_or(false);
-    let confirm_mainnet_canary = body
+        .and_then(|payload| payload.order_ref.as_deref())
+    {
+        if body_order_ref != order_ref {
+            return Err(ApiError::from(AppError::Validation(
+                "cancel order_ref in request body must match the route path".to_string(),
+            )));
+        }
+    }
+    let confirm_testnet = payload
         .as_ref()
-        .map(|Json(payload)| payload.confirm_mainnet_canary)
+        .map(|payload| payload.confirm_testnet)
         .unwrap_or(false);
-    let confirmation_text = body
-        .map(|Json(payload)| payload.confirmation_text)
-        .unwrap_or(None);
+    let confirm_mainnet_canary = payload
+        .as_ref()
+        .map(|payload| payload.confirm_mainnet_canary)
+        .unwrap_or(false);
+    let confirmation_text = payload.and_then(|payload| payload.confirmation_text);
     Ok(Json(
         state
             .service

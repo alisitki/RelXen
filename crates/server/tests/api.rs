@@ -829,6 +829,104 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
     serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
 }
 
+fn seeded_live_order(environment: LiveEnvironment, order_ref: &str) -> LiveOrderRecord {
+    let now = now_ms();
+    LiveOrderRecord {
+        id: order_ref.to_string(),
+        credential_id: None,
+        environment,
+        symbol: Symbol::BtcUsdt,
+        side: LiveOrderSide::Buy,
+        order_type: LiveOrderType::Limit,
+        status: LiveOrderStatus::Working,
+        client_order_id: order_ref.to_string(),
+        exchange_order_id: Some("42".to_string()),
+        quantity: "0.001".to_string(),
+        price: Some("77800".to_string()),
+        executed_qty: "0".to_string(),
+        avg_price: None,
+        reduce_only: false,
+        time_in_force: Some("GTC".to_string()),
+        intent_id: None,
+        intent_hash: None,
+        source_signal_id: None,
+        source_open_time: None,
+        reason: "server_cancel_test".to_string(),
+        payload: BTreeMap::new(),
+        response_type: Some("ACK".to_string()),
+        self_trade_prevention_mode: None,
+        price_match: None,
+        expire_reason: None,
+        last_error: None,
+        submitted_at: now,
+        updated_at: now,
+    }
+}
+
+async fn router_with_seeded_cancel_order(
+    environment: LiveEnvironment,
+    enable_mainnet_canary_execution: bool,
+) -> (axum::Router, String) {
+    let repository = Arc::new(InMemoryRepository::default());
+    repository
+        .save_settings(&Settings {
+            aso_length: 2,
+            aso_mode: relxen_domain::AsoMode::Intrabar,
+            auto_restart_on_apply: false,
+            paper_enabled: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let service = AppService::new_with_live(
+        AppMetadata::default(),
+        repository.clone(),
+        Arc::new(SequenceMarket::new(
+            Vec::new(),
+            vec![recent_closed_window(3, 80.0)],
+        )),
+        LiveDependencies::new(
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(ServerFakeLiveExchange),
+        ),
+        Arc::new(StaticMetrics),
+        Arc::new(NoopPublisher),
+        ServiceOptions {
+            history_limit: 3,
+            auto_start: false,
+            enable_mainnet_canary_execution,
+            ..ServiceOptions::default()
+        },
+    );
+    service.initialize().await.unwrap();
+    let credential = service
+        .create_live_credential(relxen_domain::CreateLiveCredentialRequest {
+            alias: format!("{environment}-cancel"),
+            environment,
+            api_key: "abcd1234efgh5678".to_string(),
+            api_secret: "secret".to_string(),
+        })
+        .await
+        .unwrap();
+    service
+        .validate_live_credential(credential.id)
+        .await
+        .unwrap();
+    let order_ref = "rx_exec_cancel_route_test".to_string();
+    repository
+        .upsert_live_order(&seeded_live_order(environment, &order_ref))
+        .await
+        .unwrap();
+    let router = build_router(
+        RouterState {
+            service,
+            event_bus: EventBus::new(16),
+        },
+        std::path::PathBuf::from("/Users/stk/Desktop/RelXen/web/dist"),
+    );
+    (router, order_ref)
+}
+
 #[tokio::test]
 async fn bootstrap_endpoint_returns_snapshot() {
     let repository = Arc::new(InMemoryRepository::default());
@@ -977,6 +1075,120 @@ async fn execute_endpoint_submits_testnet_order_and_status_exposes_execution_sta
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn cancel_endpoint_uses_path_order_ref_without_requiring_body_order_ref() {
+    let (router, order_ref) =
+        router_with_seeded_cancel_order(LiveEnvironment::Testnet, false).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/live/orders/{order_ref}/cancel"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "confirm_testnet": true
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["order"]["client_order_id"], order_ref);
+    assert_eq!(body["order"]["status"], "canceled");
+}
+
+#[tokio::test]
+async fn cancel_endpoint_accepts_matching_body_order_ref_for_compatibility() {
+    let (router, order_ref) =
+        router_with_seeded_cancel_order(LiveEnvironment::Testnet, false).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/live/orders/{order_ref}/cancel"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "order_ref": order_ref,
+                        "confirm_testnet": true
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["order"]["status"], "canceled");
+}
+
+#[tokio::test]
+async fn cancel_endpoint_rejects_mismatched_body_order_ref() {
+    let (router, order_ref) =
+        router_with_seeded_cancel_order(LiveEnvironment::Testnet, false).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/live/orders/{order_ref}/cancel"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "order_ref": "different-order",
+                        "confirm_testnet": true
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["kind"], "validation");
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("must match the route path"));
+}
+
+#[tokio::test]
+async fn cancel_endpoint_keeps_mainnet_confirmation_required() {
+    let (router, order_ref) = router_with_seeded_cancel_order(LiveEnvironment::Mainnet, true).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/live/orders/{order_ref}/cancel"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "confirm_mainnet_canary": true,
+                        "confirmation_text": "CANCEL MAINNET BTCUSDT wrong-order"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["accepted"], false);
+    assert_eq!(body["blocking_reason"], "mainnet_confirmation_missing");
 }
 
 #[tokio::test]

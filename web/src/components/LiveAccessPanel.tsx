@@ -77,7 +77,9 @@ export function LiveAccessPanel() {
     }
   }, [liveStatus?.active_credential, selectedId]);
 
-  const selectedCredential = credentialsQuery.data?.find((credential) => credential.id === selectedId) ?? null;
+  const selectedCredential =
+    credentialsQuery.data?.find((credential) => credential.id === selectedId) ??
+    (liveStatus?.active_credential?.id === selectedId ? liveStatus.active_credential : null);
 
   useEffect(() => {
     if (!selectedCredential) {
@@ -373,10 +375,20 @@ export function LiveAccessPanel() {
     startCheckMutation.isPending;
   const credentials = credentialsQuery.data ?? [];
   const openOrder = [...liveStatus.execution.recent_orders].reverse().find((order) => !isTerminalOrder(order));
+  const liveBlockers = collectBlockingReasons(liveStatus);
+  const liveWarnings = collectWarnings(liveStatus);
+  const lastOrder =
+    liveStatus.execution.recent_orders.length > 0
+      ? liveStatus.execution.recent_orders[liveStatus.execution.recent_orders.length - 1]
+      : null;
+  const lastFill =
+    liveStatus.execution.recent_fills.length > 0
+      ? liveStatus.execution.recent_fills[liveStatus.execution.recent_fills.length - 1]
+      : null;
 
   return (
     <div className="grid-span-6">
-      <Panel title="LIVE ACCESS Panel">
+      <Panel title="LIVE ACCESS">
         <div className="live-access">
           <div className="status-strip">
             <button
@@ -395,231 +407,301 @@ export function LiveAccessPanel() {
             </button>
           </div>
 
-          <div className="metric-grid">
-            <Metric label="Live State" value={stateLabel(liveStatus.state)} />
-            <Metric label="Environment" value={liveStatus.environment.toUpperCase()} />
-            <Metric label="Armed" value={liveStatus.armed ? "ARMED READ-ONLY" : "DISARMED"} />
-            <Metric
-              label="Kill Switch"
-              value={liveStatus.kill_switch.engaged ? "KILL SWITCH ENGAGED" : "KILL SWITCH CLEAR"}
+          <div className="operator-summary" aria-label="Live safety summary">
+            <OperatorCard label="Safety Posture" value={safeDefaultMetric(liveStatus)} />
+            <OperatorCard label="Execution" value={executionMetric(liveStatus)} />
+            <OperatorCard label="Mainnet Auto" value="MAINNET AUTO BLOCKED" />
+            <OperatorCard label="Mainnet Canary" value={mainnetCanaryMetric(liveStatus)} />
+            <OperatorCard
+              label="Position / Order"
+              value={`${positionMetric(liveStatus)} · ${openOrder ? "OPEN ORDER PRESENT" : "NO OPEN ORDER"}`}
             />
-            <Metric label="Auto Executor" value={autoMetric(liveStatus)} />
-            <Metric label="Risk Profile" value={riskMetric(liveStatus)} />
-            <Metric label="Mainnet Canary" value={mainnetCanaryMetric(liveStatus)} />
-            <Metric label="Shadow" value={shadowMetric(liveStatus)} />
-            <Metric label="Preflight" value={preflightMetric(liveStatus)} />
-            <Metric label="Execution" value={executionMetric(liveStatus)} />
-            <Metric label="Execution Gate" value={liveStatus.execution_availability.message} />
+            <OperatorCard label="Latest Order Truth" value={lastOrder ? orderOutcomeLabel(lastOrder) : "NO LIVE ORDER SUBMITTED"} />
           </div>
 
-          <div className="field-grid">
-            <Field label="Credential">
-              <select
-                aria-label="Live Credential"
-                value={selectedId}
-                onChange={(event) => setSelectedId(event.target.value)}
-                disabled={busy}
-              >
-                <option value="">New credential</option>
-                {credentials.map((credential) => (
-                  <option key={credential.id} value={credential.id}>
-                    {credentialLabel(credential)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Alias">
-              <input
-                aria-label="Live Alias"
-                value={draft.alias}
-                disabled={busy || selectedCredentialIsEnv}
-                onChange={(event) => setDraft((current) => ({ ...current, alias: event.target.value }))}
-              />
-            </Field>
-            <Field label="Environment">
-              <select
-                aria-label="Live Environment"
-                value={draft.environment}
-                disabled={busy || selectedCredentialIsEnv}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, environment: event.target.value as LiveEnvironment }))
-                }
-              >
-                <option value="testnet">testnet</option>
-                <option value="mainnet">mainnet</option>
-              </select>
-            </Field>
-            <Field label={selectedCredentialIsEnv ? "API Key" : selectedCredential ? "Replace Secret" : "API Key"}>
-              {selectedCredential && !replaceSecrets && !selectedCredentialIsEnv ? (
-                <button type="button" disabled={busy} onClick={() => setReplaceSecrets(true)}>
-                  REPLACE STORED SECRET
-                </button>
-              ) : (
+          <div className="blocker-strip" aria-label="Current safety blockers">
+            <strong>{liveBlockers.length > 0 ? "Execution blocked by" : "Execution blockers"}</strong>
+            <span>{liveBlockers.length > 0 ? liveBlockers.join(", ") : "NONE"}</span>
+            {liveWarnings.length > 0 ? <span>Warnings: {liveWarnings.join(", ")}</span> : null}
+          </div>
+
+          <section className="live-section">
+            <div className="live-section__header">
+              <div>
+                <h3>Credential</h3>
+                <p>Masked metadata only. Env credentials cannot be edited or revealed here.</p>
+              </div>
+              <span>{liveStatus.active_credential ? credentialLabel(liveStatus.active_credential) : "NO ACTIVE CREDENTIAL"}</span>
+            </div>
+            <div className="field-grid">
+              <Field label="Credential">
+                <select
+                  aria-label="Live Credential"
+                  value={selectedId}
+                  onChange={(event) => setSelectedId(event.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">New credential</option>
+                  {credentials.map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credentialLabel(credential)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Alias">
                 <input
-                  aria-label="Live API Key"
-                  value={draft.api_key}
+                  aria-label="Live Alias"
+                  value={draft.alias}
                   disabled={busy || selectedCredentialIsEnv}
-                  autoComplete="off"
-                  onChange={(event) => setDraft((current) => ({ ...current, api_key: event.target.value }))}
+                  onChange={(event) => setDraft((current) => ({ ...current, alias: event.target.value }))}
                 />
-              )}
-            </Field>
-            <Field label="API Secret">
-              <input
-                aria-label="Live API Secret"
-                value={draft.api_secret}
-                disabled={busy || selectedCredentialIsEnv || (selectedCredential !== null && !replaceSecrets)}
-                type="password"
-                autoComplete="off"
-                onChange={(event) => setDraft((current) => ({ ...current, api_secret: event.target.value }))}
-              />
-            </Field>
-            <Field label="Intent Type">
-              <select
-                aria-label="Live Intent Type"
-                value={orderType}
-                disabled={busy}
-                onChange={(event) => setOrderType(event.target.value as LiveOrderType)}
-              >
-                <option value="MARKET">MARKET</option>
-                <option value="LIMIT">LIMIT</option>
-              </select>
-            </Field>
-            <Field label="Limit Price">
-              <input
-                aria-label="Live Limit Price"
-                value={limitPrice}
-                disabled={busy || orderType !== "LIMIT"}
-                inputMode="decimal"
-                onChange={(event) => setLimitPrice(event.target.value)}
-                placeholder={orderType === "LIMIT" ? "Required for LIMIT" : "n/a for MARKET"}
-              />
-            </Field>
-            <Field label="Mainnet Confirmation">
-              <input
-                aria-label="Mainnet Canary Confirmation"
-                value={mainnetConfirmText}
-                disabled={busy || liveStatus.environment !== "mainnet"}
-                autoComplete="off"
-                onChange={(event) => setMainnetConfirmText(event.target.value)}
-                placeholder={
-                  liveStatus.environment === "mainnet"
-                    ? (liveStatus.mainnet_canary.required_confirmation ?? "Build a preview to see required text")
-                    : "n/a for TESTNET"
+              </Field>
+              <Field label="Environment">
+                <select
+                  aria-label="Live Environment"
+                  value={draft.environment}
+                  disabled={busy || selectedCredentialIsEnv}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, environment: event.target.value as LiveEnvironment }))
+                  }
+                >
+                  <option value="testnet">testnet</option>
+                  <option value="mainnet">mainnet</option>
+                </select>
+              </Field>
+              <Field label={selectedCredentialIsEnv ? "API Key" : selectedCredential ? "Replace Secret" : "API Key"}>
+                {selectedCredential && !replaceSecrets && !selectedCredentialIsEnv ? (
+                  <button type="button" disabled={busy} onClick={() => setReplaceSecrets(true)}>
+                    REPLACE STORED SECRET
+                  </button>
+                ) : (
+                  <input
+                    aria-label="Live API Key"
+                    value={draft.api_key}
+                    disabled={busy || selectedCredentialIsEnv}
+                    autoComplete="off"
+                    onChange={(event) => setDraft((current) => ({ ...current, api_key: event.target.value }))}
+                  />
+                )}
+              </Field>
+              <Field label="API Secret">
+                <input
+                  aria-label="Live API Secret"
+                  value={draft.api_secret}
+                  disabled={busy || selectedCredentialIsEnv || (selectedCredential !== null && !replaceSecrets)}
+                  type="password"
+                  autoComplete="off"
+                  onChange={(event) => setDraft((current) => ({ ...current, api_secret: event.target.value }))}
+                />
+              </Field>
+            </div>
+            <div className="action-row">
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  selectedCredentialIsEnv ||
+                  !draft.alias ||
+                  (!selectedCredential && (!draft.api_key || !draft.api_secret)) ||
+                  (selectedCredential !== null && replaceSecrets && (!draft.api_key || !draft.api_secret))
                 }
-              />
-              <small>
-                {liveStatus.environment === "mainnet"
-                  ? `Required: ${liveStatus.mainnet_canary.required_confirmation ?? "unavailable until preview is ready"}`
-                  : "MAINNET canary controls stay inactive in TESTNET."}
-              </small>
-            </Field>
-          </div>
+                onClick={() => saveMutation.mutate()}
+              >
+                {selectedCredential ? "Update Credential" : "Create Credential"}
+              </button>
+              <button type="button" disabled={busy || !selectedId} onClick={() => selectMutation.mutate()}>
+                Select Active
+              </button>
+              <button type="button" disabled={busy || !selectedId} onClick={() => validateMutation.mutate()}>
+                Validate
+              </button>
+              <button type="button" disabled={busy || !selectedId || selectedCredentialIsEnv} onClick={() => deleteMutation.mutate()}>
+                Delete
+              </button>
+            </div>
+          </section>
 
-          <div className="action-row">
-            <button
-              type="button"
-              disabled={
-                busy ||
-                selectedCredentialIsEnv ||
-                !draft.alias ||
-                (!selectedCredential && (!draft.api_key || !draft.api_secret)) ||
-                (selectedCredential !== null && replaceSecrets && (!draft.api_key || !draft.api_secret))
-              }
-              onClick={() => saveMutation.mutate()}
-            >
-              {selectedCredential ? "Update Credential" : "Create Credential"}
-            </button>
-            <button type="button" disabled={busy || !selectedId} onClick={() => selectMutation.mutate()}>
-              Select Active
-            </button>
-            <button type="button" disabled={busy || !selectedId} onClick={() => validateMutation.mutate()}>
-              Validate
-            </button>
-            <button type="button" disabled={busy || !selectedId || selectedCredentialIsEnv} onClick={() => deleteMutation.mutate()}>
-              Delete
-            </button>
-          </div>
+          <section className="live-section">
+            <div className="live-section__header">
+              <div>
+                <h3>Readiness / Shadow / Account</h3>
+                <p>Read-only account truth and shadow state. Missing or stale data keeps execution blocked.</p>
+              </div>
+              <span>{shadowMetric(liveStatus)}</span>
+            </div>
+            <div className="metric-grid metric-grid--compact">
+              <Metric label="Live State" value={stateLabel(liveStatus.state)} />
+              <Metric label="Environment" value={liveStatus.environment.toUpperCase()} />
+              <Metric label="Armed" value={liveStatus.armed ? "ARMED READ-ONLY" : "DISARMED"} />
+              <Metric label="Shadow" value={shadowMetric(liveStatus)} />
+              <Metric label="Account" value={accountMetric(liveStatus)} />
+              <Metric label="Rules" value={liveStatus.symbol_rules ? `${liveStatus.symbol_rules.symbol} RULES FRESH` : "RULES MISSING"} />
+            </div>
+            <div className="action-row">
+              <button type="button" disabled={busy} onClick={() => refreshMutation.mutate(undefined)}>
+                Refresh Readiness
+              </button>
+              <button type="button" disabled={busy || !liveStatus.readiness.can_arm} onClick={() => armMutation.mutate(undefined)}>
+                Arm Read-Only
+              </button>
+              <button type="button" disabled={busy || !liveStatus.armed} onClick={() => disarmMutation.mutate(undefined)}>
+                Disarm
+              </button>
+              <button type="button" disabled={busy} onClick={() => startCheckMutation.mutate()}>
+                Start Live Check
+              </button>
+              <button type="button" disabled={busy || !selectedId} onClick={() => shadowStartMutation.mutate(undefined)}>
+                Start Shadow Sync
+              </button>
+              <button type="button" disabled={busy} onClick={() => shadowStopMutation.mutate(undefined)}>
+                Stop Shadow Sync
+              </button>
+              <button type="button" disabled={busy} onClick={() => shadowRefreshMutation.mutate(undefined)}>
+                Refresh Shadow
+              </button>
+            </div>
+          </section>
 
-          <div className="action-row">
-            <button type="button" disabled={busy} onClick={() => refreshMutation.mutate(undefined)}>
-              Refresh Readiness
-            </button>
-            <button type="button" disabled={busy || !liveStatus.readiness.can_arm} onClick={() => armMutation.mutate(undefined)}>
-              Arm Read-Only
-            </button>
-            <button type="button" disabled={busy || !liveStatus.armed} onClick={() => disarmMutation.mutate(undefined)}>
-              Disarm
-            </button>
-            <button type="button" disabled={busy} onClick={() => startCheckMutation.mutate()}>
-              Start Live Check
-            </button>
-          </div>
+          <section className="live-section">
+            <div className="live-section__header">
+              <div>
+                <h3>Preview / Preflight</h3>
+                <p>Preflight is validation only. It never means an order was placed.</p>
+              </div>
+              <span>{preflightMetric(liveStatus)}</span>
+            </div>
+            <div className="field-grid">
+              <Field label="Intent Type">
+                <select
+                  aria-label="Live Intent Type"
+                  value={orderType}
+                  disabled={busy}
+                  onChange={(event) => setOrderType(event.target.value as LiveOrderType)}
+                >
+                  <option value="MARKET">MARKET</option>
+                  <option value="LIMIT">LIMIT</option>
+                </select>
+              </Field>
+              <Field label="Limit Price">
+                <input
+                  aria-label="Live Limit Price"
+                  value={limitPrice}
+                  disabled={busy || orderType !== "LIMIT"}
+                  inputMode="decimal"
+                  onChange={(event) => setLimitPrice(event.target.value)}
+                  placeholder={orderType === "LIMIT" ? "Required for LIMIT" : "n/a for MARKET"}
+                />
+              </Field>
+              <Field label="Mainnet Confirmation">
+                <input
+                  aria-label="Mainnet Canary Confirmation"
+                  value={mainnetConfirmText}
+                  disabled={busy || liveStatus.environment !== "mainnet"}
+                  autoComplete="off"
+                  onChange={(event) => setMainnetConfirmText(event.target.value)}
+                  placeholder={
+                    liveStatus.environment === "mainnet"
+                      ? (liveStatus.mainnet_canary.required_confirmation ?? "Build a preview to see required text")
+                      : "n/a for TESTNET"
+                  }
+                />
+                <small>
+                  {liveStatus.environment === "mainnet"
+                    ? `Required: ${liveStatus.mainnet_canary.required_confirmation ?? "unavailable until preview is ready"}`
+                    : "MAINNET canary controls stay inactive in TESTNET."}
+                </small>
+              </Field>
+            </div>
+            <div className="action-row">
+              <button type="button" disabled={busy || (orderType === "LIMIT" && !limitPrice.trim())} onClick={() => previewMutation.mutate()}>
+                Build Preview
+              </button>
+              <button type="button" disabled={busy} onClick={() => preflightMutation.mutate()}>
+                Run Preflight
+              </button>
+            </div>
+            <div className="muted">{intentSummary(liveStatus.intent_preview)}</div>
+            <div className="muted">{referencePriceSummary(liveStatus.intent_preview)} · {marketabilitySummary(liveStatus.intent_preview)}</div>
+          </section>
 
-          <div className="action-row">
-            <button type="button" disabled={busy || !selectedId} onClick={() => shadowStartMutation.mutate(undefined)}>
-              Start Shadow Sync
-            </button>
-            <button type="button" disabled={busy} onClick={() => shadowStopMutation.mutate(undefined)}>
-              Stop Shadow Sync
-            </button>
-            <button type="button" disabled={busy} onClick={() => shadowRefreshMutation.mutate(undefined)}>
-              Refresh Shadow
-            </button>
-            <button type="button" disabled={busy || (orderType === "LIMIT" && !limitPrice.trim())} onClick={() => previewMutation.mutate()}>
-              Build Preview
-            </button>
-            <button type="button" disabled={busy} onClick={() => preflightMutation.mutate()}>
-              Run Preflight
-            </button>
-          </div>
+          <section className="live-section live-section--safety">
+            <div className="live-section__header">
+              <div>
+                <h3>Safety / Canary Controls</h3>
+                <p>Mainnet auto is blocked. Mainnet canary remains manual, session-only, and exact-confirmation gated.</p>
+              </div>
+              <span>{liveStatus.kill_switch.engaged ? "KILL SWITCH ENGAGED" : "SAFE DEFAULT"}</span>
+            </div>
+            <div className="metric-grid metric-grid--compact">
+              <Metric label="Kill Switch" value={liveStatus.kill_switch.engaged ? "KILL SWITCH ENGAGED" : "KILL SWITCH RELEASED"} />
+              <Metric label="Auto Executor" value={autoMetric(liveStatus)} />
+              <Metric label="Risk Profile" value={riskMetric(liveStatus)} />
+              <Metric label="Mainnet Canary" value={mainnetCanaryMetric(liveStatus)} />
+            </div>
+            <div className="action-row">
+              <button type="button" disabled={busy || liveStatus.kill_switch.engaged} onClick={() => killEngageMutation.mutate(undefined)}>
+                Engage Kill Switch
+              </button>
+              <button type="button" disabled={busy || !liveStatus.kill_switch.engaged} onClick={() => killReleaseMutation.mutate(undefined)}>
+                Release Kill Switch
+              </button>
+              <button type="button" disabled={busy || liveStatus.risk_profile.configured} onClick={() => riskProfileMutation.mutate(undefined)}>
+                Configure Conservative Risk Profile
+              </button>
+              <button
+                type="button"
+                disabled={busy || liveStatus.environment !== "testnet" || liveStatus.auto_executor.state === "running"}
+                onClick={() => autoStartMutation.mutate(undefined)}
+              >
+                Start TESTNET Auto
+              </button>
+              <button
+                type="button"
+                disabled={busy || liveStatus.auto_executor.state !== "running"}
+                onClick={() => autoStopMutation.mutate(undefined)}
+              >
+                Stop TESTNET Auto
+              </button>
+            </div>
+          </section>
 
-          <div className="action-row">
-            <button type="button" disabled={busy || liveStatus.kill_switch.engaged} onClick={() => killEngageMutation.mutate(undefined)}>
-              Engage Kill Switch
-            </button>
-            <button type="button" disabled={busy || !liveStatus.kill_switch.engaged} onClick={() => killReleaseMutation.mutate(undefined)}>
-              Release Kill Switch
-            </button>
-            <button type="button" disabled={busy || liveStatus.risk_profile.configured} onClick={() => riskProfileMutation.mutate(undefined)}>
-              Configure Conservative Risk Profile
-            </button>
-            <button
-              type="button"
-              disabled={busy || liveStatus.environment !== "testnet" || liveStatus.auto_executor.state === "running"}
-              onClick={() => autoStartMutation.mutate(undefined)}
-            >
-              Start TESTNET Auto
-            </button>
-            <button
-              type="button"
-              disabled={busy || liveStatus.auto_executor.state !== "running"}
-              onClick={() => autoStopMutation.mutate(undefined)}
-            >
-              Stop TESTNET Auto
-            </button>
-          </div>
+          <section className="live-section">
+            <div className="live-section__header">
+              <div>
+                <h3>Orders / Fills</h3>
+                <p>ACK is request acceptance, not a fill. Canceled orders stay distinct from fills.</p>
+              </div>
+              <span>{lastFill ? "FILL RECORDED" : "NO FILL"}</span>
+            </div>
+            <div className="metric-grid metric-grid--compact">
+              <Metric label="Last Order" value={lastOrder ? orderOutcomeLabel(lastOrder) : "NO LIVE ORDER SUBMITTED"} />
+              <Metric label="Last Fill" value={lastFill ? `${lastFill.side} ${lastFill.symbol} qty ${lastFill.quantity}` : "NO FILL RECORDED"} />
+            </div>
+            <div className="action-row">
+              <button
+                type="button"
+                disabled={busy || !liveStatus.execution.can_submit || !liveStatus.intent_preview?.intent}
+                onClick={() => executeMutation.mutate()}
+              >
+                {liveStatus.environment === "mainnet" ? "Execute MAINNET Canary Preview" : "Execute TESTNET Preview"}
+              </button>
+              <button type="button" disabled={busy || !openOrder} onClick={() => openOrder && cancelMutation.mutate(openOrder.id)}>
+                {liveStatus.environment === "mainnet" ? "Cancel Open MAINNET Canary Order" : "Cancel Open TESTNET Order"}
+              </button>
+              <button type="button" disabled={busy || !openOrder} onClick={() => cancelAllMutation.mutate()}>
+                Cancel All Active-Symbol Orders
+              </button>
+              <button type="button" disabled={busy} onClick={() => flattenMutation.mutate()}>
+                {liveStatus.environment === "mainnet" ? "Flatten MAINNET Canary Position" : "Flatten TESTNET Position"}
+              </button>
+            </div>
+          </section>
 
-          <div className="action-row">
-            <button
-              type="button"
-              disabled={busy || !liveStatus.execution.can_submit || !liveStatus.intent_preview?.intent}
-              onClick={() => executeMutation.mutate()}
-            >
-              {liveStatus.environment === "mainnet" ? "Execute MAINNET Canary Preview" : "Execute TESTNET Preview"}
-            </button>
-            <button type="button" disabled={busy || !openOrder} onClick={() => openOrder && cancelMutation.mutate(openOrder.id)}>
-              {liveStatus.environment === "mainnet" ? "Cancel Open MAINNET Canary Order" : "Cancel Open TESTNET Order"}
-            </button>
-            <button type="button" disabled={busy || !openOrder} onClick={() => cancelAllMutation.mutate()}>
-              Cancel All Active-Symbol Orders
-            </button>
-            <button type="button" disabled={busy} onClick={() => flattenMutation.mutate()}>
-              {liveStatus.environment === "mainnet" ? "Flatten MAINNET Canary Position" : "Flatten TESTNET Position"}
-            </button>
-          </div>
-
-          <StatusLists status={liveStatus} activeCredential={liveStatus.active_credential} />
+          <details className="live-section live-section--details">
+            <summary>Advanced safety and exchange details</summary>
+            <StatusLists status={liveStatus} activeCredential={liveStatus.active_credential} />
+          </details>
         </div>
       </Panel>
     </div>
@@ -692,14 +774,17 @@ function credentialLabel(credential: LiveCredentialSummary): string {
   return `${sourceLabel} · ${credential.alias} · ${credential.api_key_hint}`;
 }
 
-function StatusLists({
-  status,
-  activeCredential
-}: {
-  status: NonNullable<ReturnType<typeof useAppStore.getState>["liveStatus"]>;
-  activeCredential: LiveCredentialSummary | null;
-}) {
-  const blockingReasons = unique([
+function OperatorCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="operator-card">
+      <div className="operator-card__label">{label}</div>
+      <div className="operator-card__value">{value}</div>
+    </div>
+  );
+}
+
+function collectBlockingReasons(status: LiveStatusSnapshot): string[] {
+  return unique([
     ...status.readiness.blocking_reasons,
     ...status.reconciliation.blocking_reasons,
     ...(status.intent_preview?.blocking_reasons ?? []),
@@ -707,7 +792,64 @@ function StatusLists({
     ...status.auto_executor.blocking_reasons,
     ...status.mainnet_canary.blocking_reasons
   ]);
-  const warnings = unique([...status.readiness.warnings, ...status.reconciliation.warnings, ...status.execution.warnings]);
+}
+
+function collectWarnings(status: LiveStatusSnapshot): string[] {
+  return unique([...status.readiness.warnings, ...status.reconciliation.warnings, ...status.execution.warnings]);
+}
+
+function safeDefaultMetric(status: LiveStatusSnapshot): string {
+  if (status.kill_switch.engaged) {
+    return "KILL SWITCH ENGAGED";
+  }
+  if (status.environment === "mainnet" && !status.mainnet_canary.manual_execution_enabled) {
+    return "SAFE DEFAULT";
+  }
+  if (status.environment === "testnet" && status.execution.can_submit) {
+    return "TESTNET READY";
+  }
+  return "EXECUTION BLOCKED";
+}
+
+function positionMetric(status: LiveStatusSnapshot): string {
+  const activePosition = status.account_snapshot?.positions.find(
+    (position) => position.symbol === status.symbol_rules?.symbol && position.position_amt !== 0
+  );
+  return activePosition ? `${activePosition.symbol} POSITION ${activePosition.position_amt}` : "NO OPEN POSITION";
+}
+
+function accountMetric(status: LiveStatusSnapshot): string {
+  const account = status.account_snapshot;
+  if (!account) {
+    return "ACCOUNT MISSING";
+  }
+  const mode = account.position_mode ?? "mode unknown";
+  const multi = account.multi_assets_margin === true ? "MULTI-ASSET" : "SINGLE-ASSET";
+  return `${mode.toUpperCase()} · ${multi} · available ${formatNumber(account.available_balance)}`;
+}
+
+function orderOutcomeLabel(order: LiveOrderRecord): string {
+  if (order.status === "canceled") {
+    return "ORDER CANCELED · NO FILL CLAIMED";
+  }
+  if (order.status === "filled") {
+    return `ORDER FILLED · qty ${order.executed_qty}`;
+  }
+  if (order.status === "accepted") {
+    return "ACK ACCEPTED · WAITING RECONCILIATION";
+  }
+  return `${order.status.replaceAll("_", " ").toUpperCase()} · filled ${order.executed_qty}`;
+}
+
+function StatusLists({
+  status,
+  activeCredential
+}: {
+  status: NonNullable<ReturnType<typeof useAppStore.getState>["liveStatus"]>;
+  activeCredential: LiveCredentialSummary | null;
+}) {
+  const blockingReasons = collectBlockingReasons(status);
+  const warnings = collectWarnings(status);
   const shadow = status.reconciliation.shadow;
   const preview = status.intent_preview;
   const lastPreflight =

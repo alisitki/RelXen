@@ -11,6 +11,7 @@ import { LogPanel } from "./components/LogPanel";
 import { PerformancePanel } from "./components/PerformancePanel";
 import { PositionPanel } from "./components/PositionPanel";
 import { RiskPanel } from "./components/RiskPanel";
+import { SafetyStatusBar } from "./components/SafetyStatusBar";
 import { SystemPanel } from "./components/SystemPanel";
 import { ToastViewport } from "./components/ToastViewport";
 import { TradeHistoryPanel } from "./components/TradeHistoryPanel";
@@ -50,6 +51,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <Header />
+      <SafetyStatusBar />
       <ToastViewport />
       <div className="dashboard-grid">
         <ControlPanel />

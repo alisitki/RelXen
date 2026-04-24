@@ -238,22 +238,71 @@ Tests required:
 
 - Shell syntax checks for drill scripts.
 - Full existing automated gate remains green.
-- Real TESTNET drill evidence when credentials are available.
+
+## Phase 4B — Post-Mainnet-Canary Audit Slice (Complete)
+
+Goal: Review the successful bounded MAINNET canary evidence, confirm the safe-default post-canary state, and prepare only the next bounded mainnet-readiness step.
+
+Status: Completed for `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. The audit scoped canary order/fill evidence to the single MAINNET order, preserved all-recent exports separately, confirmed no canary fill or open BTCUSDT position, confirmed the server canary flag is disabled by default, and kept MAINNET auto blocked.
+
+Non-goals: No second MAINNET order without an explicit operator request, no broad mainnet enablement, no MAINNET auto-execution, no conditional/algo orders, no symbol-scope widening, and no liquidation heatmap/liquidation-context module.
+
+Likely files/modules to touch:
+
+- `docs`: latest canary report, checklist, project state, backlog, runbook, and safety docs.
+- `artifacts`: canary evidence annotation or scoping only when it improves audit clarity without rerunning dangerous actions.
+- Application code only if the audit exposes a direct canary safety defect.
+
+Tests required:
+
+- Script syntax checks for evidence tooling.
+- Safe-default smoke checks for health, bootstrap, live status, masked credentials, and static frontend.
+- Secret-scan evidence/repository surfaces for raw credential values, excluding the local `.env` source file itself.
+
+## Phase 4C — Second Canary Readiness Dry-Run Slice (Complete)
+
+Goal: Prepare for a possible second manual MAINNET canary by validating current state, rebuilding a fresh preview, and exporting evidence without submitting any order.
+
+Status: Completed for `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`. The dry-run selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, confirmed no open BTCUSDT mainnet order and no previous canary fill, exercised kill-switch engage/release, kept the server canary flag disabled, and built a fresh non-marketable `BUY LIMIT BTCUSDT 0.001 @ 77800` preview.
+
+Non-goals: No real MAINNET order submission, no canary flag enablement, no MAINNET auto-execution, no conditional/algo orders, no symbol-scope widening, and no liquidation heatmap/liquidation-context module.
+
+Tests required:
+
+- Script syntax checks for evidence tooling.
+- Safe-default smoke checks for health, bootstrap, live status, masked credentials, and static frontend.
+- Evidence/repository secret scan for raw credential values, excluding the local `.env` source file itself.
+
+## Phase 4D — Second Manual Mainnet Canary Execution Slice (Complete)
+
+Goal: Execute one additional bounded manual MAINNET canary after the dry-run gates pass, then cancel, reconcile, restart-repair, and disable the server canary flag.
+
+Status: Completed for `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. Exactly one `BUY LIMIT BTCUSDT 0.001 @ 77800` MAINNET order submitted with ACK, canceled, reconciled with `executed_qty=0.000`, left the account flat, passed restart repair, and ended with `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`. MAINNET auto remained blocked.
+
+Non-goals: No broader mainnet enablement, no MAINNET auto-execution, no conditional/algo orders, no symbol-scope widening, and no liquidation heatmap/liquidation-context module.
+
+Follow-up completed: The cancel endpoint body ergonomics issue is fixed. The first cancel request in the second canary had the order reference in the route path and exact confirmation text in the body, but the body omitted `order_ref`; the route treated it as absent and returned `mainnet_confirmation_missing`. Retrying with `order_ref` duplicated in the body canceled successfully. `POST /api/live/orders/:order_ref/cancel` now uses the path as authoritative, accepts omitted or matching optional body `order_ref`, rejects mismatches, and keeps confirmation gates intact.
+
+## Phase 4E — Mainnet Canary Closure And Operator Handoff Slice (Current)
+
+Goal: Close the current mainnet-canary phase without submitting any new order, align final status docs, audit the major evidence bundles, and provide an operator handoff.
+
+Status: Completed as documentation and smoke validation. `docs/OPERATOR_HANDOFF.md` now defines safe startup, env credential verification, status/order/fill inspection, evidence bundle locations, canary re-run prerequisites, and rollback/stop notes. The real TESTNET soak bundle, first MAINNET canary bundle, and second MAINNET canary bundle were reviewed. The older TESTNET soak bundle predates the newer canary evidence shape but contains masked credential metadata, order/fill exports, timeline, live-status before/after, repair events, and session summary.
+
+Non-goals: No order submission, no canary flag enablement, no MAINNET auto-execution, no conditional/algo orders, no symbol-scope widening, and no liquidation heatmap/liquidation-context module.
 
 Exit criteria:
 
-- A real evidence bundle exists under `artifacts/testnet-soak/<timestamp>/`.
-- The latest soak report states pass/fail/not-exercised for every required scenario.
-- Bugs found during the drill are fixed or converted into bounded backlog items.
-- Mainnet canary go/no-go recommendation is updated from evidence.
+- Final live-state smoke confirms safe defaults and no unexpected MAINNET exposure.
+- Evidence bundles remain truthful and secret-safe.
+- Cancel endpoint fix remains documented as a post-canary follow-up, not a rewritten historical result.
+- Operator handoff doc exists.
 
-Key risks: Claiming real exchange evidence without credentials, leaking account data in artifacts, or treating a smoke export as a real drill.
-
-Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`, engage kill switch if needed, and keep paper mode operational.
+Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`, stop the server if uncertain, engage kill switch if a live session is running, verify open orders and flat position from exchange-authoritative status, and preserve evidence.
 
 ## Smallest Safe Next Implementation Batch
 
-Review the successful reference-price-fixed MAINNET canary bundle and decide the next bounded mainnet-readiness task.
+Use `docs/OPERATOR_HANDOFF.md` for normal safe startup/review. If another canary is ever explicitly requested, run a fresh dry-run checklist first and keep the canary flag disabled until a separate execution task.
 
 ## What Not To Do Next
 

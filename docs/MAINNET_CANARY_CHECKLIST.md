@@ -6,6 +6,14 @@ Default recommendation: GO for the bounded manual canary path that was exercised
 
 MAINNET canary is engineered behind explicit server and operator gates, but the operator should not enable it from a fresh checkout without current testnet drill evidence.
 
+Closure posture: prep/review only by default. Do not submit another MAINNET order unless the operator explicitly requests that run, `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` is enabled only for that session, MAINNET auto remains blocked, and every hard precondition below passes again with fresh evidence.
+
+Latest second-canary dry-run evidence: `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`. The dry-run did not submit an order. It produced a fresh `BUY LIMIT BTCUSDT 0.001 @ 77800` readiness preview with reference `78294.8`, source `internal_market_candle`, age `25046 ms`, required margin `15.56`, available `USDT=25.0902305`, and mainnet canary disabled.
+
+Latest second-canary execution evidence: `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. One real `BUY LIMIT BTCUSDT 0.001 @ 77800` order submitted with ACK, canceled, reconciled with `executed_qty=0.000`, left no position, passed restart repair, and disabled the canary flag afterward. The run exposed a cancel payload ergonomics issue that is now fixed: `POST /api/live/orders/:order_ref/cancel` uses the path `order_ref` as authoritative and no longer requires duplication in the JSON body.
+
+Operator handoff: see [OPERATOR_HANDOFF.md](./OPERATOR_HANDOFF.md). It is the default reference for safe startup, status inspection, evidence review, and rollback/stop notes.
+
 ## Hard Preconditions
 
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` is intentionally set only for the canary session.
@@ -32,6 +40,7 @@ MAINNET canary is engineered behind explicit server and operator gates, but the 
 - A fresh preview still passes after the same-session kill-switch engage/release drill.
 - Operator has reviewed max notional, max leverage, max daily loss, and flatten procedure.
 - No TESTNET drill helper is enabled or used in the MAINNET session.
+- The operator explicitly requested this canary run. A prior successful canary does not authorize a follow-up order by itself.
 
 ## Immediate No-Go Conditions
 
@@ -86,3 +95,4 @@ MAINNET canary is engineered behind explicit server and operator gates, but the 
 - Any repair/degradation logs.
 - Operator note confirming no conditional/algo order was used.
 - Operator note confirming no MAINNET auto-execution path was enabled.
+- For further canaries, cancel evidence should prove the route path order reference and exact confirmation are handled without requiring duplicated body fields.

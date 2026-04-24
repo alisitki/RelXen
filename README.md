@@ -2,7 +2,9 @@
 
 RelXen is a clean-room ASO-based Binance Futures trading dashboard. It is a local single-user app with a Rust backend, SQLite persistence, masked live credential metadata, live shadow/preflight foundations, a constrained Binance USDⓈ-M Futures executor, and a lightweight React dashboard served statically by the backend.
 
-Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, optional local `.env` credential loading, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` non-marketable `LIMIT` canary submitted, canceled, reconciled, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
+Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, optional local `.env` credential loading, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` non-marketable `LIMIT` canary submitted, canceled, reconciled, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. A later second-canary readiness dry-run built a fresh non-marketable preview without submitting an order under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`, then a second bounded MAINNET `BTCUSDT` canary submitted and canceled under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. The follow-up cancel endpoint ergonomics fix makes the route path `order_ref` sufficient for `POST /api/live/orders/:order_ref/cancel` while preserving exact confirmation gates. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
+
+The RC dashboard has been cleaned up for operator/friend review with a top safety summary and clearer LIVE ACCESS sections. This UI pass did not add trading behavior or submit any order.
 
 ## V1 Scope
 
@@ -33,12 +35,16 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 - Testnet soak drill: [docs/TESTNET_SOAK_RUNBOOK.md](docs/TESTNET_SOAK_RUNBOOK.md)
 - Latest soak report: [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md)
 - Latest mainnet canary report: [docs/LATEST_MAINNET_CANARY_REPORT.md](docs/LATEST_MAINNET_CANARY_REPORT.md)
+- Operator handoff: [docs/OPERATOR_HANDOFF.md](docs/OPERATOR_HANDOFF.md)
+- Final RC snapshot: [docs/FINAL_RC_SNAPSHOT.md](docs/FINAL_RC_SNAPSHOT.md)
 - Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Current project memory: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)
 - Post-v1 live readiness entrypoint: [docs/LIVE_READINESS.md](docs/LIVE_READINESS.md)
 
 ## Live Readiness Docs
 
+- [Operator Handoff](docs/OPERATOR_HANDOFF.md)
+- [Final RC Snapshot](docs/FINAL_RC_SNAPSHOT.md)
 - [Live Execution Boundary](docs/LIVE_EXECUTION_BOUNDARY.md)
 - [Secret Storage Plan](docs/SECRET_STORAGE_PLAN.md)
 - [Precision And Exchange Rules](docs/PRECISION_AND_EXCHANGE_RULES.md)
@@ -153,6 +159,7 @@ Critical UI meaning is also represented textually, for example `▲ LONG`, `▼ 
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - MAINNET auto-execution.
 - Broader incident automation beyond the documented soak evidence workflow.
+- Liquidation heatmap/liquidation-context module; ASO remains the active strategy signal and no new live decision layer is added in the post-canary safety-hardening flow.
 - Tauri packaging.
 - Multi-user auth.
 - Multi-symbol concurrent runtime.

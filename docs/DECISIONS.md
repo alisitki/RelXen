@@ -123,3 +123,15 @@ The 2026-04-24 leverage-fixed retry proved the same account/API context could re
 ### Mainnet reference price resolver may use REST mark price as deterministic fallback
 
 The 2026-04-24 reference-price-fixed retry kept the fresh-reference hard gate but made the source explicit. RelXen now prefers fresh internal market state and falls back to Binance USD-M REST mark price for the active environment/symbol when internal state is missing, stale, or invalid after kill-switch release. Final MAINNET submit forces this refresh and still blocks on stale or failed reference-price resolution. Preview/evidence must record source, age, rounded order price, and marketability so the operator can audit why the final canary gate passed.
+
+### Liquidation heatmap is deferred until after mainnet safety hardening
+
+Liquidation heatmap or liquidation-context work is intentionally deferred after the first successful bounded MAINNET canary. ASO remains the active strategy signal, and no new heatmap models, endpoints, frontend panels, or live decision layer should be added until source semantics, data quality, and execution-safety implications are designed in a separate batch.
+
+### Cancel route path order reference is authoritative
+
+`POST /api/live/orders/:order_ref/cancel` now treats the route path `order_ref` as the cancel target. The JSON body carries confirmation fields only; an optional body `order_ref` is accepted for compatibility when it matches the path and rejected when it differs. This avoids duplicating target identity in normal clients while preserving fail-closed mismatch handling.
+
+### Operational evidence remains ignored local artifact data by default
+
+TESTNET soak and MAINNET canary bundles under `artifacts/testnet-soak/` and `artifacts/mainnet-canary/` are local operational evidence and remain ignored by default. Release-candidate commits should carry durable docs and summaries, not raw artifact bundles, unless a future task explicitly curates and secret-scans a bundle for publication. Historical evidence should not be rewritten to hide real failures; reports must preserve truthful outcomes such as the second canary's failed first cancel attempt followed by a successful retry.

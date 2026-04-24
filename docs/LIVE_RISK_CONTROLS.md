@@ -17,6 +17,9 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, an explicitly selected mainnet credential, matching mainnet shadow/reconciliation environment, sufficient available balance, a fresh reference price from internal market state or Binance USD-M REST mark price, a non-marketable `LIMIT` after tick-size rounding, and all canary gates.
 - Explicit operator-configured risk profile before MAINNET canary readiness.
 - Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session. The current successful MAINNET canary evidence bundle is `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
+- A second-canary readiness dry-run exists under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`; it did not submit an order and kept the mainnet canary server flag disabled.
+- A second bounded MAINNET canary execution exists under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`; it submitted one order, canceled it, left no fill/position, and disabled the canary flag afterward. Its cancel payload ergonomics issue has been fixed and regression-tested without submitting another order.
+- Mainnet-canary closure is an operator handoff, not broader enablement. MAINNET canary remains session-only, MAINNET auto remains blocked, and any further canary must repeat fresh dry-run gates first.
 
 ## Runtime Guards
 
@@ -104,6 +107,7 @@ The implemented TESTNET flatten path cancels active-symbol open orders first, th
 - Reconciliation status and last account snapshot age.
 - Explicit `MAINNET CANARY READY` versus `MAINNET EXECUTION BLOCKED` text.
 - Evidence/export status should distinguish smoke-only exports from real TESTNET drill evidence.
+- New signal-context modules, including liquidation heatmap/liquidation context, must remain non-execution work until separately designed and reviewed. They must not silently widen live decision inputs or canary gates.
 
 ## Fail-Closed Defaults
 

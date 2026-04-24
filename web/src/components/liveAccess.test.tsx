@@ -218,10 +218,10 @@ describe("live access panel", () => {
     renderWithClient(<LiveAccessPanel />);
 
     expect(screen.getByText("VALIDATION FAILED")).toBeTruthy();
-    expect(screen.getByText(/validation_failed, symbol_rules_missing/)).toBeTruthy();
+    expect(screen.getAllByText(/validation_failed, symbol_rules_missing/).length).toBeGreaterThan(0);
     expect(screen.getByText("testnet_environment, validation_stale")).toBeTruthy();
     expect(screen.getByText(/BTCUSDT TRADING tick 0.1/)).toBeTruthy();
-    expect(screen.getByText(/available 900/)).toBeTruthy();
+    expect(screen.getAllByText(/available 900/).length).toBeGreaterThan(0);
   });
 
   it("labels env credentials without exposing or replacing secrets", async () => {
@@ -489,12 +489,12 @@ describe("live access panel", () => {
 
     await user.click(screen.getByRole("button", { name: "Build Preview" }));
     expect(await screen.findByText("Live order intent preview built.")).toBeTruthy();
-    expect(screen.getByText(/BUY MARKET BTCUSDT qty 0.010/)).toBeTruthy();
-    expect(screen.getByText(/TESTNET EXECUTION GATED/)).toBeTruthy();
+    expect(screen.getAllByText(/BUY MARKET BTCUSDT qty 0.010/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/TESTNET EXECUTION GATED/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/EXECUTION BLOCKED/).length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Run Preflight" }));
-    expect(await screen.findAllByText("PREFLIGHT PASSED. No order was placed.")).toHaveLength(2);
+    expect((await screen.findAllByText("PREFLIGHT PASSED. No order was placed.")).length).toBeGreaterThanOrEqual(2);
     expect(document.body.textContent).not.toContain("ORDER PLACED");
   });
 
@@ -698,10 +698,78 @@ describe("live access panel", () => {
     await user.click(screen.getByRole("button", { name: "Cancel Open TESTNET Order" }));
     expect(cancelLiveOrder).toHaveBeenCalledWith("order-1", true);
     expect(await screen.findByText("TESTNET cancel submitted.")).toBeTruthy();
-    expect(screen.getByText(/CANCELED/)).toBeTruthy();
+    expect(screen.getAllByText(/CANCELED/).length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Flatten TESTNET Position" }));
     expect(flattenLivePosition).toHaveBeenCalledWith(true);
     expect(await screen.findByText("TESTNET flatten submitted.")).toBeTruthy();
+  });
+
+  it("keeps mainnet auto blocked and canary disabled visible by default", () => {
+    const mainnetCredential: LiveCredentialSummary = {
+      ...credential,
+      id: "env-mainnet",
+      alias: "env-mainnet",
+      environment: "mainnet",
+      source: "env",
+      api_key_hint: "main...1234"
+    };
+    useAppStore.getState().setLiveStatus(
+      readyStatus({
+        environment: "mainnet",
+        state: "mainnet_execution_blocked",
+        active_credential: mainnetCredential,
+        readiness: {
+          environment: "mainnet",
+          active_credential: mainnetCredential,
+          blocking_reasons: ["mainnet_canary_disabled"],
+          warnings: []
+        },
+        execution: {
+          state: "mainnet_execution_blocked",
+          environment: "mainnet",
+          can_submit: false,
+          blocking_reasons: ["mainnet_canary_disabled"],
+          warnings: [],
+          active_order: null,
+          recent_orders: [],
+          recent_fills: [],
+          kill_switch_engaged: false,
+          repair_recent_window_only: true,
+          mainnet_canary_enabled: false,
+          updated_at: 2_000
+        },
+        auto_executor: {
+          state: "stopped",
+          environment: "testnet",
+          order_type: "MARKET",
+          started_at: null,
+          stopped_at: 2_000,
+          last_signal_id: null,
+          last_signal_open_time: null,
+          last_intent_hash: null,
+          last_order_id: null,
+          last_message: "MAINNET auto is unavailable.",
+          blocking_reasons: ["mainnet_auto_blocked"],
+          updated_at: 2_000
+        },
+        mainnet_canary: {
+          enabled_by_server: false,
+          risk_profile_configured: false,
+          canary_ready: false,
+          manual_execution_enabled: false,
+          required_confirmation: null,
+          blocking_reasons: ["mainnet_canary_disabled"],
+          updated_at: 2_000
+        }
+      })
+    );
+    vi.mocked(listLiveCredentials).mockResolvedValue([mainnetCredential]);
+
+    renderWithClient(<LiveAccessPanel />);
+
+    expect(screen.getByText("MAINNET AUTO BLOCKED")).toBeTruthy();
+    expect(screen.getAllByText("MAINNET CANARY DISABLED BY SERVER").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/mainnet_canary_disabled/).length).toBeGreaterThan(0);
   });
 });

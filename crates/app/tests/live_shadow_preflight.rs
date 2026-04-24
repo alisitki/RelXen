@@ -307,7 +307,7 @@ async fn preflight_builds_precision_aware_intent_and_does_not_create_position() 
 #[tokio::test]
 async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
     let exchange = arc(FakeLiveExchange::default());
-    let service = live_shadow_service(exchange).await;
+    let service = live_shadow_service(exchange.clone()).await;
     create_valid_credential(&service).await;
     service.arm_live().await.unwrap();
     service.start_live_shadow().await.unwrap();
@@ -335,7 +335,7 @@ async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
 
     let canceled = service
         .cancel_live_order(LiveCancelRequest {
-            order_ref: order.id,
+            order_ref: order.id.clone(),
             confirm_testnet: true,
             confirm_mainnet_canary: false,
             confirmation_text: None,
@@ -343,10 +343,13 @@ async fn testnet_execute_and_cancel_are_gated_and_persist_order_state() {
         .await
         .unwrap();
     assert!(canceled.accepted);
+    let canceled_order = canceled.order.unwrap();
+    assert_eq!(canceled_order.id, order.id);
     assert_eq!(
-        canceled.order.unwrap().status.as_str(),
+        canceled_order.status.as_str(),
         relxen_domain::LiveOrderStatus::Canceled.as_str()
     );
+    assert_eq!(exchange.submitted_orders.lock().await.len(), 1);
 }
 
 #[tokio::test]

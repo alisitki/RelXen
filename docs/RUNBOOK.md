@@ -105,6 +105,8 @@ If `resync_required` is emitted, the frontend reloads `/api/bootstrap` and rebui
 
 The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight work, TESTNET manual execution, TESTNET closed-candle auto-execution, kill switch controls, and a manual MAINNET canary path that is disabled by default.
 
+The shareable RC UI shows a top safety strip before the control panels. It should plainly show `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED` unless a separate canary session is intentionally enabled, kill-switch state, active symbol, current state, and position state. The LIVE ACCESS panel groups its controls into credential, readiness/shadow/account, preview/preflight, safety/canary controls, orders/fills, and advanced details.
+
 1. Create a credential with alias, environment (`testnet` or `mainnet`), API key, and API secret, or enable local env credentials with `RELXEN_CREDENTIAL_SOURCE=env`.
 2. RelXen stores secure-store raw material in OS secure storage; env raw material remains process-only. SQLite stores only masked metadata and source.
 3. Select the active credential. TESTNET env credentials may auto-select when no valid active TESTNET credential exists. When `RELXEN_CREDENTIAL_SOURCE=env` is set, the TESTNET env credential takes precedence over a persisted secure-store TESTNET selection. MAINNET env credentials never auto-select and require explicit selection.
@@ -186,9 +188,11 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 
 ## MAINNET Canary Procedure
 
+For normal operator handoff after the completed canary phase, start with [OPERATOR_HANDOFF.md](./OPERATOR_HANDOFF.md). The procedure below is only for an explicitly requested canary session.
+
 1. Review [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md) and [LATEST_MAINNET_CANARY_REPORT.md](./LATEST_MAINNET_CANARY_REPORT.md). If the current recommendation is NO-GO, do not proceed.
 2. Review [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md) and satisfy every hard precondition.
-3. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill.
+3. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill. A previous successful canary does not authorize a second order; the operator must explicitly request the follow-up run and repeat every gate with fresh state.
 4. Stop TESTNET auto mode and engage the kill switch before changing credentials or environment.
 5. Set `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` only for the canary run, restart the backend, and verify `/api/live/status` reports canary server enablement.
 6. Explicitly select and validate a mainnet credential from OS secure storage or the env-backed `env-mainnet` summary. MAINNET env credentials are never auto-selected.
@@ -198,6 +202,10 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 10. Submit one manual canary action only. Wait for user-data/REST reconciliation before any follow-up.
 11. Export evidence immediately after the action.
 12. Disable the server canary flag after the drill and restart back into the default blocked state.
+
+For a second canary readiness dry-run, keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false`, repeat credential validation/readiness/shadow refresh, exercise kill-switch engage/release, rebuild a fresh non-marketable `LIMIT` preview, export evidence, and stop before `POST /api/live/execute`. The latest dry-run evidence is `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`.
+
+The latest second canary execution evidence is `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. That run exposed a cancel payload ergonomics issue, later fixed: cancel requests now use the route path order reference as authoritative. The JSON body should carry only the required confirmation fields; if an optional body `order_ref` is supplied, it must match the path.
 
 ## Common Failure Notes
 
@@ -209,3 +217,5 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 ## Paper-Mode Boundaries
 
 RelXen v1 paper mode remains independent. Post-v1 RelXen can place/cancel/flatten TESTNET orders only through explicit operator actions and fail-closed gates. MAINNET remains default-off except for the manual canary gate, MAINNET auto remains blocked, conditional/algo orders are unsupported, and symbol scope is unchanged. Live credentials use OS secure storage by default or explicit local env loading; SQLite stores masked metadata only.
+
+Liquidation heatmap/liquidation-context work is deferred until after mainnet safety hardening. It should not be added as a model, API, frontend panel, strategy input, or live decision layer in the current canary-readiness flow.

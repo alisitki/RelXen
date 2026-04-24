@@ -59,6 +59,7 @@ This document defines live-mode boundaries in terms of the current RelXen archit
 - `mainnet_canary_ready`: manual MAINNET canary gates can pass for the displayed preview.
 - `mainnet_manual_execution_enabled`: exact confirmation for the current MAINNET preview is available. MAINNET auto remains unavailable.
 - `execution_not_implemented`: retained for routes/features that still do not have an execution implementation, including MAINNET auto and broader exchange features.
+- Liquidation heatmap/liquidation-context features are outside this boundary for now. They must not be added as live decision inputs or execution gates without a separate design batch.
 - `start_blocked`: A live start/check command is blocked by the current gate result.
 - `ready`: Future execution-ready state after order-intent/executor work exists.
 - `armed`: Future execution-armed state after order-intent/executor work exists.
