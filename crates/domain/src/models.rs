@@ -449,6 +449,15 @@ pub enum MainnetAutoRunMode {
     Live,
 }
 
+impl MainnetAutoRunMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DryRun => "dry_run",
+            Self::Live => "live",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MainnetAutoStopReason {
@@ -467,6 +476,8 @@ pub enum MainnetAutoStopReason {
     MaxLossReached,
     MaxRejectionsReached,
     DuplicateSignalDetected,
+    LiveStartBlocked,
+    LeverageAboveMax,
     UnsupportedAccountMode,
     UnsupportedMarginMode,
     EvidenceLoggingFailed,
@@ -493,6 +504,8 @@ impl MainnetAutoStopReason {
             Self::MaxLossReached => "max_loss_reached",
             Self::MaxRejectionsReached => "max_rejections_reached",
             Self::DuplicateSignalDetected => "duplicate_signal_detected",
+            Self::LiveStartBlocked => "live_start_blocked",
+            Self::LeverageAboveMax => "leverage_above_max",
             Self::UnsupportedAccountMode => "unsupported_account_mode",
             Self::UnsupportedMarginMode => "unsupported_margin_mode",
             Self::EvidenceLoggingFailed => "evidence_logging_failed",
@@ -1501,6 +1514,16 @@ impl Default for MainnetAutoConfig {
     }
 }
 
+pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT: &str = "START MAINNET AUTO LIVE BTCUSDT 15M";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoLiveStartRequest {
+    pub symbol: Symbol,
+    pub duration_minutes: u64,
+    pub order_type: LiveOrderType,
+    pub confirmation_text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MainnetAutoRiskBudget {
     pub configured: bool,
@@ -1583,9 +1606,15 @@ pub struct MainnetAutoStatus {
     pub mode: MainnetAutoRunMode,
     pub config: MainnetAutoConfig,
     pub risk_budget: MainnetAutoRiskBudget,
+    pub watchdog: MainnetAutoWatchdogStatus,
     pub session_id: Option<String>,
     pub started_at: Option<i64>,
+    pub expires_at: Option<i64>,
     pub stopped_at: Option<i64>,
+    pub last_heartbeat_at: Option<i64>,
+    pub last_signal_id: Option<String>,
+    pub last_signal_open_time: Option<i64>,
+    pub last_order_id: Option<String>,
     pub last_decision_id: Option<String>,
     pub last_decision_outcome: Option<MainnetAutoDecisionOutcome>,
     pub last_watchdog_stop_reason: Option<MainnetAutoStopReason>,
@@ -1606,9 +1635,15 @@ impl Default for MainnetAutoStatus {
             mode: config.mode,
             config,
             risk_budget: MainnetAutoRiskBudget::default(),
+            watchdog: MainnetAutoWatchdogStatus::default(),
             session_id: None,
             started_at: None,
+            expires_at: None,
             stopped_at: None,
+            last_heartbeat_at: None,
+            last_signal_id: None,
+            last_signal_open_time: None,
+            last_order_id: None,
             last_decision_id: None,
             last_decision_outcome: None,
             last_watchdog_stop_reason: None,

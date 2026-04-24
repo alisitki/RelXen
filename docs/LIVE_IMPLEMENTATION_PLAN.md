@@ -259,6 +259,28 @@ Tests required:
 - Safe-default smoke checks for health, bootstrap, live status, masked credentials, and static frontend.
 - Secret-scan evidence/repository surfaces for raw credential values, excluding the local `.env` source file itself.
 
+## Phase 5 — Mainnet Auto Live Support Slice (Implemented, Not Run)
+
+Goal: Implement a real gated MAINNET auto live-session path for a future explicit 15-minute `BTCUSDT` trial without starting it in this batch.
+
+Status: Implemented as Mainnet Auto Live Support v1. `POST /api/live/mainnet-auto/start` now accepts a typed live-start request requiring `BTCUSDT`, `15` minutes, `MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`. The service rejects unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, fresh MAINNET credential/readiness/shadow/rules/reference state, flat start, one-way/single-asset mode, leverage `<=5`, risk budget, watchdog, and evidence/lesson requirements pass. Closed-candle ASO signals can submit through the existing exchange adapter only from a `live_running` mainnet-auto session. Tests use mocked adapters; no real order was submitted.
+
+Non-goals: No live session run, no TESTNET or MAINNET order in this batch, no conditional/algo orders, no liquidation heatmap, no symbol expansion.
+
+Tests required:
+
+- Live start disabled/config/confirmation blockers.
+- Mocked closed-candle BUY/SELL path through the exchange adapter.
+- Duplicate/in-flight/open-position and watchdog blockers.
+- Script syntax and full workspace gate.
+
+Exit criteria:
+
+- Mainnet auto remains disabled by default.
+- Live start is impossible without explicit server config and exact session confirmation.
+- No per-order confirmation is needed after session start, but every signal still passes risk/watchdog/reconciliation gates.
+- Evidence and lesson reporting remain analysis/audit only.
+
 ## Phase 4C — Second Canary Readiness Dry-Run Slice (Complete)
 
 Goal: Prepare for a possible second manual MAINNET canary by validating current state, rebuilding a fresh preview, and exporting evidence without submitting any order.

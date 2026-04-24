@@ -20,7 +20,7 @@ Live execution must be operator-gated and fail closed. In the current repository
 - A second-canary readiness dry-run exists under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`; it did not submit an order and kept the mainnet canary server flag disabled.
 - A second bounded MAINNET canary execution exists under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`; it submitted one order, canceled it, left no fill/position, and disabled the canary flag afterward. Its cancel payload ergonomics issue has been fixed and regression-tested without submitting another order.
 - Mainnet-canary closure is an operator handoff, not broader enablement. MAINNET canary remains session-only, MAINNET auto remains blocked, and any further canary must repeat fresh dry-run gates first.
-- MAINNET auto infrastructure has its own persisted risk budget and remains live-blocked by default. Dry-run may evaluate a would-submit decision, but it must not call the exchange order endpoint. Future live auto requires explicit server config, operator arm/start, fresh account/rules/shadow/reference price, flat-start checks, evidence logging, lesson reporting, and watchdog readiness.
+- MAINNET auto infrastructure has its own persisted risk budget and remains live-blocked by default. Dry-run may evaluate a would-submit decision, but it must not call the exchange order endpoint. Mainnet Auto Live Support v1 adds a future `BTCUSDT` 15-minute `MARKET` session path with exact session confirmation, emergency order/fill caps of 20, notional cap 80, max realized loss 5 USDT, one in-flight order, one open position maximum, watchdog runtime stop, evidence logging, and lesson reporting. It was tested with mocked adapters only and was not run live.
 - The operator-DB dry-run used risk budget `mainnet-auto-operator-dry-run-v1`: `BTCUSDT`, `LIMIT` only, max leverage `5`, one order/fill max, `80` max notional/order/session/open, flat start/stop, fresh shadow/reference, evidence logging, and lesson report required. This is a dry-run profile only and is not approval for live auto.
 
 ## Runtime Guards
@@ -61,6 +61,7 @@ Live runtime may start only when all are true:
 - MAINNET canary preview is `LIMIT`, non-marketable after rounding, and based on a fresh reference price.
 - MAINNET canary review has the current TESTNET soak evidence bundle and updated checklist.
 - MAINNET auto live mode has `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, an operator arm/start command, a valid risk budget, and evidence/lesson output initialized. These gates are for a future explicit batch; current default is dry-run/live-blocked.
+- The future live auto start confirmation must exactly be `START MAINNET AUTO LIVE BTCUSDT 15M`; no per-order confirmation is used after the session is started.
 
 ## Stop Conditions
 

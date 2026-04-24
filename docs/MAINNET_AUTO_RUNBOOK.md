@@ -2,7 +2,7 @@
 
 ## Current Boundary
 
-MAINNET auto infrastructure exists for dry-run validation, evidence, and lesson reporting. Live MAINNET auto remains disabled by default and must not be started without a separate explicit live-run task.
+MAINNET auto infrastructure exists for dry-run validation, evidence, lesson reporting, and a gated future live-session path. Live MAINNET auto remains disabled by default and must not be started without a separate explicit live-run task.
 
 Dry-run may read status, credentials metadata, market/account/rules/shadow/reference context, and closed-candle ASO decisions. It must not submit, cancel, or flatten orders.
 
@@ -95,15 +95,16 @@ In dry-run, `orders.json` and `fills.json` must be empty or explicitly show that
 
 ## Live Mode Requirements For A Future Batch
 
-Do not start live MAINNET auto in the current boundary. A future live batch must require all of the following:
+Do not start live MAINNET auto in the current boundary. Mainnet Auto Live Support v1 is implemented but unrun. A future live batch must require all of the following:
 
 - `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`
 - `RELXEN_MAINNET_AUTO_MODE=live`
-- explicit operator arm/start command and strong confirmation
+- explicit operator arm/start command and strong confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`
 - validated MAINNET credential
 - fresh account, rules, shadow, user-data, and reference price
 - flat start if required by risk budget
-- supported symbol only: `BTCUSDT` or `BTCUSDC`
+- supported first live-auto symbol: `BTCUSDT`
+- order type: `MARKET` for v1 live auto
 - no open order or unresolved position
 - configured risk budget
 - max leverage not above budget
@@ -113,6 +114,31 @@ Do not start live MAINNET auto in the current boundary. A future live batch must
 - watchdog running
 
 If any input is missing, stale, ambiguous, or invalid, live start must fail closed and no order may be submitted.
+
+Future live trial command, for an approved execution batch only:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 \
+RELXEN_CREDENTIAL_SOURCE=env \
+RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true \
+RELXEN_MAINNET_AUTO_MODE=live \
+RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false \
+RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=15 \
+RELXEN_MAINNET_AUTO_MAX_ORDERS=20 \
+RELXEN_MAINNET_AUTO_MAX_FILLS=20 \
+RELXEN_MAINNET_AUTO_MAX_NOTIONAL=80 \
+RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS=5 \
+RELXEN_MAINNET_AUTO_START_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M" \
+scripts/run_mainnet_auto_live_trial.sh --symbol BTCUSDT --duration-minutes 15
+```
+
+Monitor and recovery helpers:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --heartbeat
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --summary
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --flat-check
+```
 
 ## Stop And Recovery
 

@@ -14,7 +14,8 @@ use relxen_domain::{
     CreateLiveCredentialRequest, DisarmLiveModeRequest, LiveAutoExecutorRequest,
     LiveCancelAllRequest, LiveCancelRequest, LiveCredentialId, LiveExecutionRequest,
     LiveFlattenRequest, LiveKillSwitchRequest, LiveOrderType, LiveRiskProfile,
-    SetLiveModePreferenceRequest, Settings, UpdateLiveCredentialRequest,
+    MainnetAutoLiveStartRequest, SetLiveModePreferenceRequest, Settings,
+    UpdateLiveCredentialRequest,
 };
 use relxen_infra::EventBus;
 
@@ -451,8 +452,14 @@ async fn stop_mainnet_auto_dry_run(
 
 async fn start_mainnet_auto_live(
     State(state): State<RouterState>,
+    body: Option<Json<MainnetAutoLiveStartRequest>>,
 ) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
-    Ok(Json(state.service.start_mainnet_auto_live().await?))
+    Ok(Json(
+        state
+            .service
+            .start_mainnet_auto_live(body.map(|Json(payload)| payload))
+            .await?,
+    ))
 }
 
 async fn stop_mainnet_auto(

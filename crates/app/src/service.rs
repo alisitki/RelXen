@@ -35,10 +35,11 @@ use relxen_domain::{
     LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord, LiveStatusSnapshot, LiveSymbolRules,
     LiveUserDataEvent, LiveWarning, LogEvent, MainnetAutoConfig, MainnetAutoDecisionEvent,
     MainnetAutoDecisionOutcome, MainnetAutoEvidenceExportResult, MainnetAutoLessonReport,
-    MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState, MainnetAutoStatus,
-    MainnetAutoStopReason, MainnetAutoWatchdogEvent, PaperEngine, PerformanceStats, Position,
-    QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings, SignalEvent, Symbol,
-    SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
+    MainnetAutoLiveStartRequest, MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState,
+    MainnetAutoStatus, MainnetAutoStopReason, MainnetAutoWatchdogEvent, PaperEngine,
+    PerformanceStats, Position, QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings,
+    SignalEvent, Symbol, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet,
+    ALLOWED_SYMBOLS, MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
 };
 
 use crate::events::{AppMetadata, BootstrapPayload, OutboundEvent};
@@ -171,6 +172,22 @@ struct RuntimeHandle {
 enum MarketEventOrigin {
     Live,
     Recovery,
+}
+
+#[derive(Debug, Clone)]
+enum LiveExecutionPolicy {
+    OperatorConfirmed,
+    MainnetAutoLive { session_id: String },
+}
+
+struct MainnetAutoLiveDecisionInput<'a> {
+    session_id: &'a str,
+    outcome: MainnetAutoDecisionOutcome,
+    signal: &'a SignalEvent,
+    reference: Option<&'a LiveReferencePriceSnapshot>,
+    blocking_reasons: Vec<String>,
+    would_submit: bool,
+    message: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -1413,6 +1430,7 @@ impl AppService {
             reference_price_snapshot: reference.snapshot,
             reference_price_blocking_reason: reference.blocking_reason,
             limit_price,
+            mainnet_auto_live: false,
             now_ms: now_ms(),
         });
         info!(
@@ -1781,30 +1799,87 @@ impl AppService {
             .await
     }
 
-    pub async fn start_mainnet_auto_live(&self) -> AppResult<MainnetAutoStatus> {
+    pub async fn start_mainnet_auto_live(
+        self: &Arc<Self>,
+        request: Option<MainnetAutoLiveStartRequest>,
+    ) -> AppResult<MainnetAutoStatus> {
         let now = now_ms();
         let mut status = self.load_mainnet_auto_status_with_config().await?;
-        let mut blockers = self.mainnet_auto_config_blockers(&status.config);
-        if status.config.mode != MainnetAutoRunMode::Live {
-            blockers.push("mainnet_auto_mode_not_live".to_string());
-        }
-        if !status.config.enable_live_execution {
-            blockers.push("mainnet_auto_config_disabled".to_string());
-        }
+        let risk_budget = self.mainnet_auto_risk_budget().await?;
+        let mut blockers = self
+            .mainnet_auto_live_start_blockers(request.as_ref(), &risk_budget)
+            .await?;
         blockers.sort();
         blockers.dedup();
-        status.state = MainnetAutoState::ConfigBlocked;
+        if !blockers.is_empty() {
+            status.state = if blockers
+                .iter()
+                .any(|blocker| blocker == "risk_profile_missing" || blocker.contains("risk_budget"))
+            {
+                MainnetAutoState::RiskProfileMissing
+            } else if blockers
+                .iter()
+                .any(|blocker| blocker.contains("credential"))
+            {
+                MainnetAutoState::CredentialsMissing
+            } else if blockers
+                .iter()
+                .any(|blocker| blocker.contains("config") || blocker.contains("mode"))
+            {
+                MainnetAutoState::ConfigBlocked
+            } else {
+                MainnetAutoState::ReadinessBlocked
+            };
+            status.mode = status.config.mode;
+            status.risk_budget = risk_budget;
+            status.blocking_reasons = blockers.clone();
+            status.current_blockers = blockers;
+            status.last_decision_outcome = Some(MainnetAutoDecisionOutcome::LiveSubmitBlocked);
+            status.last_heartbeat_at = Some(now);
+            status.updated_at = now;
+            self.repository.save_mainnet_auto_status(&status).await?;
+            info!(
+                event = "auto_live_submit_blocked",
+                blockers = ?status.blocking_reasons,
+                "MAINNET live auto start blocked by server-side gates"
+            );
+            return Ok(status);
+        }
+
+        let request = request.expect("checked above");
+        let session_id = format!("mnauto_live_{}", Uuid::new_v4().simple());
+        let expires_at = now + (request.duration_minutes as i64) * 60_000;
+        let evidence_path = self.initialize_mainnet_auto_evidence_dir(&session_id, now)?;
+        status.state = MainnetAutoState::LiveRunning;
         status.mode = status.config.mode;
-        status.blocking_reasons = blockers.clone();
-        status.current_blockers = blockers;
-        status.last_decision_outcome = Some(MainnetAutoDecisionOutcome::LiveSubmitBlocked);
+        status.risk_budget = risk_budget;
+        status.session_id = Some(session_id.clone());
+        status.started_at = Some(now);
+        status.expires_at = Some(expires_at);
+        status.stopped_at = None;
+        status.last_heartbeat_at = Some(now);
+        status.last_watchdog_stop_reason = None;
+        status.watchdog.running = true;
+        status.watchdog.last_check_at = Some(now);
+        status.watchdog.last_stop_reason = None;
+        status.watchdog.last_message = Some("MAINNET auto live watchdog running.".to_string());
+        status.blocking_reasons.clear();
+        status.current_blockers.clear();
+        status.live_orders_submitted = 0;
+        status.dry_run_orders_submitted = 0;
+        status.evidence_path = Some(evidence_path);
+        status.last_decision_id = None;
         status.updated_at = now;
         self.repository.save_mainnet_auto_status(&status).await?;
         info!(
-            event = "auto_live_submit_blocked",
-            blockers = ?status.blocking_reasons,
-            "MAINNET live auto start blocked by server-side gates"
+            event = "auto_session_started",
+            session_id = %session_id,
+            mode = "live",
+            symbol = %request.symbol,
+            duration_minutes = request.duration_minutes,
+            "MAINNET auto live session started; orders remain gated per signal"
         );
+        self.spawn_mainnet_auto_runtime_watchdog(session_id, expires_at);
         Ok(status)
     }
 
@@ -1821,7 +1896,7 @@ impl AppService {
             .clone()
             .unwrap_or_else(|| format!("mnauto_export_{}", Uuid::new_v4().simple()));
         let now = now_ms();
-        let path = PathBuf::from(format!("artifacts/mainnet-auto/{now}-{session_id}"));
+        let path = artifact_root().join(format!("mainnet-auto/{now}-{session_id}"));
         fs::create_dir_all(&path).map_err(|error| {
             AppError::Live(format!(
                 "failed to initialize mainnet auto evidence: {error}"
@@ -1835,12 +1910,25 @@ impl AppService {
             .await?;
         let lessons = self.repository.latest_mainnet_auto_lesson_report().await?;
         let risk_budget = self.mainnet_auto_risk_budget().await?;
-        let orders = Vec::<LiveOrderRecord>::new();
-        let fills = Vec::<LiveFillRecord>::new();
+        let live_order_submitted = auto_status_before.live_orders_submitted > 0;
+        let orders = if auto_status_before.mode == MainnetAutoRunMode::Live {
+            self.repository
+                .list_live_orders(self.options.recent_live_order_limit)
+                .await?
+        } else {
+            Vec::<LiveOrderRecord>::new()
+        };
+        let fills = if auto_status_before.mode == MainnetAutoRunMode::Live {
+            self.repository
+                .list_live_fills(self.options.recent_live_fill_limit)
+                .await?
+        } else {
+            Vec::<LiveFillRecord>::new()
+        };
         let final_verdict = serde_json::json!({
-            "mode": "dry_run",
-            "live_order_submitted": false,
-            "final_verdict": "no_live_order_submitted",
+            "mode": auto_status_before.mode.as_str(),
+            "live_order_submitted": live_order_submitted,
+            "final_verdict": if live_order_submitted { "live_session_recorded" } else { "no_live_order_submitted" },
             "recommendation": lessons.as_ref().map(|lesson| lesson.recommendation.as_str()).unwrap_or("live_not_allowed")
         });
 
@@ -1849,15 +1937,20 @@ impl AppService {
             "manifest.json",
             &serde_json::json!({
                 "session_id": session_id,
+                "mode": auto_status_before.mode.as_str(),
                 "created_at": now,
                 "secret_policy": "masked_metadata_only",
-                "live_order_submitted": false
+                "live_order_submitted": live_order_submitted
             }),
         )?;
         write_text_file(
             &path,
             "session_summary.md",
-            "# Mainnet Auto Dry-Run Evidence\n\nNo live order was submitted. MAINNET auto live execution remained disabled by default.\n",
+            if auto_status_before.mode == MainnetAutoRunMode::Live {
+                "# Mainnet Auto Live Evidence\n\nLive session evidence export. Order and fill records are exchange-reconciliation artifacts; ACK is not fill.\n"
+            } else {
+                "# Mainnet Auto Dry-Run Evidence\n\nNo live order was submitted. MAINNET auto live execution remained disabled by default.\n"
+            },
         )?;
         write_json_lines_file(&path, "timeline.ndjson", &decisions)?;
         write_json_file(&path, "live_status_before.json", &status_before)?;
@@ -1964,8 +2057,12 @@ impl AppService {
                 "lessons.md".to_string(),
                 "lessons.json".to_string(),
             ],
-            final_verdict: "no_live_order_submitted".to_string(),
-            live_order_submitted: false,
+            final_verdict: if live_order_submitted {
+                "live_session_recorded".to_string()
+            } else {
+                "no_live_order_submitted".to_string()
+            },
+            live_order_submitted,
             created_at: now,
         })
     }
@@ -2120,6 +2217,18 @@ impl AppService {
         &self,
         request: LiveExecutionRequest,
     ) -> AppResult<LiveExecutionResult> {
+        self.execute_live_current_preview_with_policy(
+            request,
+            LiveExecutionPolicy::OperatorConfirmed,
+        )
+        .await
+    }
+
+    async fn execute_live_current_preview_with_policy(
+        &self,
+        request: LiveExecutionRequest,
+        policy: LiveExecutionPolicy,
+    ) -> AppResult<LiveExecutionResult> {
         let now = now_ms();
         let (credential, secret, environment) = self.active_live_secret().await?;
         let status = self.refresh_live_status_from_repository().await?;
@@ -2159,70 +2268,97 @@ impl AppService {
         }
         if environment == LiveEnvironment::Mainnet {
             let required = mainnet_confirmation_phrase(&intent);
-            if intent.order_type != LiveOrderType::Limit {
-                return Ok(blocked_execution_result(
-                    LiveBlockingReason::MainnetCanaryLimitRequired,
-                    "MAINNET canary requires a non-marketable LIMIT order.",
-                    now,
-                ));
-            }
-            let reference = self
-                .current_reference_price(environment, intent.symbol)
-                .await;
-            if let Some(reason) = reference.blocking_reason {
-                return Ok(blocked_execution_result(
-                    reason,
-                    "MAINNET canary requires a fresh reference price.",
-                    now,
-                ));
-            }
-            let reference_price = reference.price;
-            let limit_price = intent
-                .price
-                .as_deref()
-                .and_then(|price| Decimal::from_str(price).ok())
-                .unwrap_or(Decimal::ZERO);
-            let marketable = match intent.side {
-                LiveOrderSide::Buy => limit_price >= reference_price,
-                LiveOrderSide::Sell => limit_price <= reference_price,
-            };
-            if marketable {
-                return Ok(blocked_execution_result(
-                    LiveBlockingReason::MainnetCanaryLimitMarketable,
-                    "MAINNET canary LIMIT price is marketable after tick-size rounding.",
-                    now,
-                ));
-            }
-            if !self.options.enable_mainnet_canary_execution {
-                self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
-                    reason: LiveBlockingReason::MainnetCanaryDisabled
-                        .as_str()
-                        .to_string(),
-                });
-                return Ok(blocked_execution_result(
-                    LiveBlockingReason::MainnetCanaryDisabled,
-                    "MAINNET canary execution is disabled by server policy.",
-                    now,
-                ));
-            }
-            if !status.risk_profile.configured {
-                return Ok(blocked_execution_result(
-                    LiveBlockingReason::MainnetCanaryRiskProfileMissing,
-                    "MAINNET canary requires an explicit operator-configured risk profile.",
-                    now,
-                ));
-            }
-            if !request.confirm_mainnet_canary
-                || request.confirmation_text.as_deref() != Some(required.as_str())
-            {
-                return Ok(blocked_execution_result(
-                    LiveBlockingReason::MainnetConfirmationMissing,
-                    &format!("MAINNET canary requires exact confirmation: {required}"),
-                    now,
-                ));
+            match &policy {
+                LiveExecutionPolicy::MainnetAutoLive { session_id } => {
+                    if intent.order_type != LiveOrderType::Market {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::ExecutionNotImplemented,
+                            "MAINNET auto live v1 supports MARKET orders only.",
+                            now,
+                        ));
+                    }
+                    let auto = self.load_mainnet_auto_status_with_config().await?;
+                    if auto.state != MainnetAutoState::LiveRunning
+                        || auto.session_id.as_deref() != Some(session_id.as_str())
+                        || !auto.config.enable_live_execution
+                        || auto.config.mode != MainnetAutoRunMode::Live
+                    {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetAutoBlocked,
+                            "MAINNET auto live session is not running or is not server-enabled.",
+                            now,
+                        ));
+                    }
+                }
+                LiveExecutionPolicy::OperatorConfirmed => {
+                    if intent.order_type != LiveOrderType::Limit {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetCanaryLimitRequired,
+                            "MAINNET canary requires a non-marketable LIMIT order.",
+                            now,
+                        ));
+                    }
+                    let reference = self
+                        .current_reference_price(environment, intent.symbol)
+                        .await;
+                    if let Some(reason) = reference.blocking_reason {
+                        return Ok(blocked_execution_result(
+                            reason,
+                            "MAINNET canary requires a fresh reference price.",
+                            now,
+                        ));
+                    }
+                    let reference_price = reference.price;
+                    let limit_price = intent
+                        .price
+                        .as_deref()
+                        .and_then(|price| Decimal::from_str(price).ok())
+                        .unwrap_or(Decimal::ZERO);
+                    let marketable = match intent.side {
+                        LiveOrderSide::Buy => limit_price >= reference_price,
+                        LiveOrderSide::Sell => limit_price <= reference_price,
+                    };
+                    if marketable {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetCanaryLimitMarketable,
+                            "MAINNET canary LIMIT price is marketable after tick-size rounding.",
+                            now,
+                        ));
+                    }
+                    if !self.options.enable_mainnet_canary_execution {
+                        self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
+                            reason: LiveBlockingReason::MainnetCanaryDisabled
+                                .as_str()
+                                .to_string(),
+                        });
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetCanaryDisabled,
+                            "MAINNET canary execution is disabled by server policy.",
+                            now,
+                        ));
+                    }
+                    if !status.risk_profile.configured {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetCanaryRiskProfileMissing,
+                            "MAINNET canary requires an explicit operator-configured risk profile.",
+                            now,
+                        ));
+                    }
+                    if !request.confirm_mainnet_canary
+                        || request.confirmation_text.as_deref() != Some(required.as_str())
+                    {
+                        return Ok(blocked_execution_result(
+                            LiveBlockingReason::MainnetConfirmationMissing,
+                            &format!("MAINNET canary requires exact confirmation: {required}"),
+                            now,
+                        ));
+                    }
+                }
             }
         }
-        if !status.execution.can_submit {
+        if !status.execution.can_submit
+            && !matches!(policy, LiveExecutionPolicy::MainnetAutoLive { .. })
+        {
             let reason = status
                 .execution
                 .blocking_reasons
@@ -2239,6 +2375,18 @@ impl AppService {
             ));
         }
 
+        self.submit_live_order_from_intent(credential, secret, environment, intent)
+            .await
+    }
+
+    async fn submit_live_order_from_intent(
+        &self,
+        credential: LiveCredentialSummary,
+        secret: LiveCredentialSecret,
+        environment: LiveEnvironment,
+        intent: relxen_domain::LiveOrderIntent,
+    ) -> AppResult<LiveExecutionResult> {
+        let now = now_ms();
         let client_order_id = client_order_id("rx_exec");
         let mut payload = intent.exchange_payload.clone();
         payload.insert("newClientOrderId".to_string(), client_order_id.clone());
@@ -2815,18 +2963,302 @@ impl AppService {
         if config.mode == MainnetAutoRunMode::DryRun {
             blockers.push("mainnet_auto_mode_dry_run".to_string());
         }
-        if config.require_manual_canary_evidence {
-            blockers.push("manual_canary_evidence_required".to_string());
-        }
-        if config.evidence_required {
-            blockers.push("evidence_logging_required".to_string());
-        }
-        if config.lesson_report_required {
-            blockers.push("lesson_report_required".to_string());
-        }
         blockers.sort();
         blockers.dedup();
         blockers
+    }
+
+    async fn mainnet_auto_live_start_blockers(
+        &self,
+        request: Option<&MainnetAutoLiveStartRequest>,
+        risk_budget: &MainnetAutoRiskBudget,
+    ) -> AppResult<Vec<String>> {
+        let mut blockers = self.mainnet_auto_config_blockers(&self.options.mainnet_auto_config);
+        let Some(request) = request else {
+            blockers.push("live_start_request_missing".to_string());
+            return Ok(blockers);
+        };
+        if request.symbol != Symbol::BtcUsdt {
+            blockers.push("mainnet_auto_symbol_not_btcusdt".to_string());
+        }
+        if request.duration_minutes != 15 {
+            blockers.push("mainnet_auto_duration_not_15m".to_string());
+        }
+        if request.order_type != LiveOrderType::Market {
+            blockers.push("mainnet_auto_order_type_not_market".to_string());
+        }
+        if request.confirmation_text != MAINNET_AUTO_LIVE_CONFIRMATION_TEXT {
+            blockers.push("mainnet_auto_session_confirmation_missing".to_string());
+        }
+        if self.options.mainnet_auto_config.max_runtime_minutes != 15 {
+            blockers.push("mainnet_auto_config_runtime_not_15m".to_string());
+        }
+        if !(2..=20).contains(&self.options.mainnet_auto_config.max_orders) {
+            blockers.push("mainnet_auto_config_max_orders_invalid".to_string());
+        }
+        if !(2..=20).contains(&self.options.mainnet_auto_config.max_fills) {
+            blockers.push("mainnet_auto_config_max_fills_invalid".to_string());
+        }
+        if !self.options.mainnet_auto_config.evidence_required {
+            blockers.push("mainnet_auto_evidence_required_false".to_string());
+        }
+        if !self.options.mainnet_auto_config.lesson_report_required {
+            blockers.push("mainnet_auto_lesson_report_required_false".to_string());
+        }
+        if self
+            .options
+            .mainnet_auto_config
+            .require_manual_canary_evidence
+            && !self.mainnet_canary_evidence_available()
+        {
+            blockers.push("manual_canary_evidence_required".to_string());
+        }
+
+        blockers.extend(self.mainnet_auto_risk_budget_blockers(risk_budget, request.symbol));
+
+        let settings = self.state.lock().await.settings.clone();
+        if settings.active_symbol != request.symbol {
+            blockers.push("active_symbol_not_btcusdt".to_string());
+        }
+        if settings.fixed_notional > 80.0 {
+            blockers.push("mainnet_auto_fixed_notional_above_80".to_string());
+        }
+        if settings.leverage > 5.0 {
+            blockers.push("mainnet_auto_settings_leverage_above_5".to_string());
+        }
+
+        let live_status = self.live_status().await?;
+        if live_status.environment != LiveEnvironment::Mainnet {
+            blockers.push("mainnet_environment_not_selected".to_string());
+        }
+        let Some(credential) = live_status.active_credential.as_ref() else {
+            blockers.push("mainnet_credential_missing".to_string());
+            return Ok(blockers);
+        };
+        if credential.environment != LiveEnvironment::Mainnet {
+            blockers.push("mainnet_credential_not_selected".to_string());
+        }
+        if !credential.validation_status.is_valid() {
+            blockers.push("mainnet_validation_missing".to_string());
+        }
+        if live_status.kill_switch.engaged {
+            blockers.push("kill_switch_engaged".to_string());
+        }
+        if live_status.symbol_rules.as_ref().is_none_or(|rules| {
+            rules.environment != LiveEnvironment::Mainnet || rules.symbol != request.symbol
+        }) {
+            blockers.push("symbol_rules_stale_or_missing".to_string());
+        }
+        if live_status
+            .account_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.environment != LiveEnvironment::Mainnet)
+        {
+            blockers.push("account_snapshot_stale_or_missing".to_string());
+        }
+        if live_status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.position_mode.as_deref() != Some("one_way"))
+        {
+            blockers.push("unsupported_account_mode".to_string());
+        }
+        if live_status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.multi_assets_margin.unwrap_or(false))
+        {
+            blockers.push("unsupported_margin_mode".to_string());
+        }
+        if live_status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.positions.iter().any(|position| {
+                    position.symbol == request.symbol && position.leverage.unwrap_or(0.0) > 5.0
+                })
+            })
+        {
+            blockers.push("leverage_above_max".to_string());
+        }
+        if live_status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.positions.iter().any(|position| {
+                    position.symbol == request.symbol && position.position_amt.abs() > f64::EPSILON
+                })
+            })
+        {
+            blockers.push("open_position".to_string());
+        }
+        if live_status.execution.recent_orders.iter().any(|order| {
+            order.environment == LiveEnvironment::Mainnet
+                && order.symbol == request.symbol
+                && order.status.is_open()
+        }) {
+            blockers.push("open_order".to_string());
+        }
+        if live_status.reconciliation.stream.state != LiveShadowStreamState::Running
+            || live_status.reconciliation.stream.stale
+            || live_status.reconciliation.stream.environment != LiveEnvironment::Mainnet
+        {
+            blockers.push("shadow_stale_or_down".to_string());
+        }
+        if live_status
+            .reconciliation
+            .shadow
+            .as_ref()
+            .is_none_or(|shadow| shadow.environment != LiveEnvironment::Mainnet || shadow.ambiguous)
+        {
+            blockers.push("shadow_state_ambiguous".to_string());
+        }
+        let reference = self
+            .current_reference_price(LiveEnvironment::Mainnet, request.symbol)
+            .await;
+        if let Some(reason) = reference.blocking_reason {
+            blockers.push(reason.as_str().to_string());
+        }
+        blockers.sort();
+        blockers.dedup();
+        Ok(blockers)
+    }
+
+    fn mainnet_auto_risk_budget_blockers(
+        &self,
+        budget: &MainnetAutoRiskBudget,
+        symbol: Symbol,
+    ) -> Vec<String> {
+        let mut blockers = Vec::new();
+        if !budget.configured {
+            blockers.push("risk_profile_missing".to_string());
+        }
+        if !budget.allowed_symbols.contains(&symbol) {
+            blockers.push("risk_budget_symbol_not_allowed".to_string());
+        }
+        if !budget.allowed_order_types.contains(&LiveOrderType::Market) {
+            blockers.push("risk_budget_market_not_allowed".to_string());
+        }
+        if !(2..=20).contains(&budget.max_orders_per_session) {
+            blockers.push("risk_budget_max_orders_invalid".to_string());
+        }
+        if !(2..=20).contains(&budget.max_fills_per_session) {
+            blockers.push("risk_budget_max_fills_invalid".to_string());
+        }
+        if budget.max_runtime_minutes != 15 {
+            blockers.push("risk_budget_runtime_not_15m".to_string());
+        }
+        if !budget.require_flat_start || !budget.require_flat_stop {
+            blockers.push("risk_budget_flat_start_stop_required".to_string());
+        }
+        if !budget.require_fresh_reference_price || !budget.require_fresh_shadow {
+            blockers.push("risk_budget_fresh_state_required".to_string());
+        }
+        if !budget.require_evidence_logging || !budget.require_lessons_report {
+            blockers.push("risk_budget_evidence_lessons_required".to_string());
+        }
+        let max_leverage = Decimal::from_str(&budget.max_leverage).unwrap_or(Decimal::ZERO);
+        if max_leverage <= Decimal::ZERO || max_leverage > Decimal::new(5, 0) {
+            blockers.push("risk_budget_max_leverage_invalid".to_string());
+        }
+        for (label, value, cap) in [
+            (
+                "max_notional_per_order",
+                &budget.max_notional_per_order,
+                Decimal::new(80, 0),
+            ),
+            (
+                "max_total_session_notional",
+                &budget.max_total_session_notional,
+                Decimal::new(80, 0),
+            ),
+            (
+                "max_open_notional",
+                &budget.max_open_notional,
+                Decimal::new(80, 0),
+            ),
+            (
+                "max_daily_realized_loss",
+                &budget.max_daily_realized_loss,
+                Decimal::new(5, 0),
+            ),
+        ] {
+            let parsed = Decimal::from_str(value).unwrap_or(Decimal::ZERO);
+            if parsed <= Decimal::ZERO || parsed > cap {
+                blockers.push(format!("risk_budget_{label}_invalid"));
+            }
+        }
+        blockers
+    }
+
+    fn initialize_mainnet_auto_evidence_dir(
+        &self,
+        session_id: &str,
+        now: i64,
+    ) -> AppResult<String> {
+        let path = artifact_root().join(format!("mainnet-auto/{now}-{session_id}-live"));
+        fs::create_dir_all(&path).map_err(|error| {
+            AppError::Live(format!(
+                "failed to initialize mainnet auto live evidence: {error}"
+            ))
+        })?;
+        write_json_file(
+            &path,
+            "manifest.json",
+            &serde_json::json!({
+                "session_id": session_id,
+                "mode": "live",
+                "created_at": now,
+                "secret_policy": "masked_metadata_only",
+                "live_session_started": true,
+                "live_order_submitted": false
+            }),
+        )?;
+        write_text_file(
+            &path,
+            "session_summary.md",
+            "# Mainnet Auto Live Session Evidence\n\nSession initialized. Order and fill truth must come from exchange-authoritative reconciliation.\n",
+        )?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    fn mainnet_canary_evidence_available(&self) -> bool {
+        let root = Path::new("artifacts/mainnet-canary");
+        let Ok(entries) = fs::read_dir(root) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            path.join("final_verdict.json").is_file() || path.join("orders.json").is_file()
+        })
+    }
+
+    fn spawn_mainnet_auto_runtime_watchdog(self: &Arc<Self>, session_id: String, expires_at: i64) {
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            let now = now_ms();
+            if expires_at > now {
+                sleep(Duration::from_millis((expires_at - now) as u64)).await;
+            }
+            let status = match service.load_mainnet_auto_status_with_config().await {
+                Ok(status) => status,
+                Err(error) => {
+                    warn!(
+                        event = "watchdog_check_failed",
+                        detail = %error,
+                        "failed to load MAINNET auto status for runtime watchdog"
+                    );
+                    return;
+                }
+            };
+            if status.state == MainnetAutoState::LiveRunning
+                && status.session_id.as_deref() == Some(session_id.as_str())
+            {
+                let _ = service
+                    .stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxRuntimeReached)
+                    .await;
+            }
+        });
     }
 
     async fn record_mainnet_auto_dry_run_decision(
@@ -3018,19 +3450,46 @@ impl AppService {
             .session_id
             .clone()
             .unwrap_or_else(|| format!("mnauto_stop_{}", Uuid::new_v4().simple()));
-        status.state = if reason == MainnetAutoStopReason::OperatorStop {
+        let flat_stop_blocker =
+            if status.mode == MainnetAutoRunMode::Live && status.risk_budget.require_flat_stop {
+                self.live_status().await.ok().and_then(|snapshot| {
+                    snapshot.account_snapshot.and_then(|account| {
+                        account
+                            .positions
+                            .into_iter()
+                            .find(|position| {
+                                position.symbol == Symbol::BtcUsdt
+                                    && position.position_amt.abs() > f64::EPSILON
+                            })
+                            .map(|_| "unexpected_position".to_string())
+                    })
+                })
+            } else {
+                None
+            };
+        status.state = if flat_stop_blocker.is_some() {
+            MainnetAutoState::Degraded
+        } else if reason == MainnetAutoStopReason::OperatorStop {
             MainnetAutoState::Stopped
         } else {
             MainnetAutoState::WatchdogStopped
         };
         status.stopped_at = Some(now);
         status.last_watchdog_stop_reason = Some(reason);
-        status.current_blockers = vec![reason.as_str().to_string()];
+        status.watchdog.running = false;
+        status.watchdog.last_check_at = Some(now);
+        status.watchdog.last_stop_reason = Some(reason);
+        status.watchdog.last_message = Some(format!("Mainnet auto stopped: {}", reason.as_str()));
+        status.current_blockers = flat_stop_blocker
+            .into_iter()
+            .chain(std::iter::once(reason.as_str().to_string()))
+            .collect();
         status.blocking_reasons = status.current_blockers.clone();
+        status.last_heartbeat_at = Some(now);
         status.updated_at = now;
         let event = MainnetAutoWatchdogEvent {
             id: format!("mnauto_watchdog_{}", Uuid::new_v4().simple()),
-            session_id,
+            session_id: session_id.clone(),
             reason,
             message: format!("Mainnet auto stopped: {}", reason.as_str()),
             created_at: now,
@@ -3039,6 +3498,15 @@ impl AppService {
             .append_mainnet_auto_watchdog_event(&event)
             .await?;
         self.repository.save_mainnet_auto_status(&status).await?;
+        if status.config.lesson_report_required {
+            if let Err(error) = self.generate_mainnet_auto_lesson_report(&session_id).await {
+                warn!(
+                    event = "lesson_report_failed",
+                    detail = %error,
+                    "MAINNET auto lesson report failed during stop"
+                );
+            }
+        }
         info!(
             event = "auto_session_stopped",
             reason = %reason.as_str(),
@@ -3056,6 +3524,15 @@ impl AppService {
             .into_iter()
             .filter(|decision| decision.session_id == session_id)
             .collect();
+        let status = self.load_mainnet_auto_status_with_config().await?;
+        let mode = if session_decisions
+            .iter()
+            .any(|decision| decision.mode == MainnetAutoRunMode::Live)
+        {
+            MainnetAutoRunMode::Live
+        } else {
+            status.mode
+        };
         let signals_observed = session_decisions
             .iter()
             .filter(|decision| decision.signal_id.is_some())
@@ -3087,23 +3564,31 @@ impl AppService {
             "needs_fix_before_live"
         };
         let mut utilization = BTreeMap::new();
-        utilization.insert("orders_used".to_string(), "0".to_string());
+        utilization.insert(
+            "orders_used".to_string(),
+            status.live_orders_submitted.to_string(),
+        );
         utilization.insert("fills_used".to_string(), "0".to_string());
-        utilization.insert("live_orders_submitted".to_string(), "0".to_string());
+        utilization.insert(
+            "live_orders_submitted".to_string(),
+            status.live_orders_submitted.to_string(),
+        );
         let explanation = format!(
-            "# Mainnet Auto Lessons\n\nMode: dry_run\n\nLive orders submitted: no\n\nSignals observed: {signals_observed}\n\nBlocked decisions: {decisions_blocked}\n\nWould-submit decisions: {would_submit_decisions}\n\nRecommendation: {recommendation}\n\nThis report is analysis only. It did not change strategy, risk settings, or live enablement.\n"
+            "# Mainnet Auto Lessons\n\nMode: {}\n\nLive orders submitted: {}\n\nSignals observed: {signals_observed}\n\nBlocked decisions: {decisions_blocked}\n\nWould-submit decisions: {would_submit_decisions}\n\nRecommendation: {recommendation}\n\nThis report is analysis only. It did not change strategy, risk settings, or live enablement.\n",
+            mode.as_str(),
+            if status.live_orders_submitted > 0 { "yes" } else { "no" }
         );
         let report = MainnetAutoLessonReport {
             id: format!("mnauto_lesson_{}", Uuid::new_v4().simple()),
             session_id: session_id.to_string(),
-            mode: MainnetAutoRunMode::DryRun,
-            live_order_submitted: false,
+            mode,
+            live_order_submitted: status.live_orders_submitted > 0,
             signals_observed,
             decisions_blocked,
             would_submit_decisions,
             duplicate_suppression_count,
             top_blockers,
-            watchdog_stop_reason: None,
+            watchdog_stop_reason: status.last_watchdog_stop_reason,
             risk_budget_utilization: utilization,
             reference_price_freshness_summary: session_decisions
                 .last()
@@ -4857,6 +5342,7 @@ impl AppService {
             reference_price_snapshot: None,
             reference_price_blocking_reason: None,
             limit_price: None,
+            mainnet_auto_live: false,
             now_ms: now_ms(),
         });
         {
@@ -4919,6 +5405,356 @@ impl AppService {
             "closed-candle signal processed by TESTNET auto executor"
         );
         Ok(())
+    }
+
+    async fn maybe_mainnet_auto_execute_signal(&self, signal: SignalEvent) -> AppResult<()> {
+        let mut auto_status = self.load_mainnet_auto_status_with_config().await?;
+        if auto_status.state != MainnetAutoState::LiveRunning {
+            return Ok(());
+        }
+        let now = now_ms();
+        let session_id = auto_status
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("mnauto_live_missing_{}", Uuid::new_v4().simple()));
+        if auto_status
+            .expires_at
+            .is_some_and(|expires_at| now >= expires_at)
+        {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxRuntimeReached)
+                .await?;
+            return Ok(());
+        }
+        if !signal.closed_only {
+            self.append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                session_id: &session_id,
+                outcome: MainnetAutoDecisionOutcome::SkippedUnfinishedCandle,
+                signal: &signal,
+                reference: None,
+                blocking_reasons: Vec::new(),
+                would_submit: false,
+                message: "Unfinished candle signal ignored by MAINNET auto live.",
+            })
+            .await?;
+            return Ok(());
+        }
+
+        let risk_budget = self.mainnet_auto_risk_budget().await?;
+        if auto_status.live_orders_submitted >= auto_status.config.max_orders
+            || auto_status.live_orders_submitted >= risk_budget.max_orders_per_session
+        {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxOrdersReached)
+                .await?;
+            return Ok(());
+        }
+
+        let live_status = self.live_status().await?;
+        let settings = self.state.lock().await.settings.clone();
+        let reference = self
+            .current_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt)
+            .await;
+        let mut blockers = Vec::<String>::new();
+        if !auto_status.config.enable_live_execution
+            || auto_status.config.mode != MainnetAutoRunMode::Live
+        {
+            blockers.push("mainnet_auto_config_disabled".to_string());
+        }
+        if live_status.kill_switch.engaged {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::KillSwitchEngaged)
+                .await?;
+            return Ok(());
+        }
+        if live_status.environment != LiveEnvironment::Mainnet {
+            blockers.push("mainnet_environment_not_selected".to_string());
+        }
+        if settings.active_symbol != Symbol::BtcUsdt || signal.symbol != Symbol::BtcUsdt {
+            blockers.push("mainnet_auto_symbol_not_btcusdt".to_string());
+        }
+        if live_status.reconciliation.stream.state != LiveShadowStreamState::Running
+            || live_status.reconciliation.stream.stale
+        {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::ShadowStale)
+                .await?;
+            return Ok(());
+        }
+        if reference.blocking_reason.is_some() {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::ReferencePriceStale)
+                .await?;
+            return Ok(());
+        }
+        if live_status.execution.recent_orders.iter().any(|order| {
+            order.environment == LiveEnvironment::Mainnet
+                && order.symbol == Symbol::BtcUsdt
+                && order.status.is_open()
+        }) {
+            blockers.push("open_order".to_string());
+        }
+        if live_status
+            .reconciliation
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| {
+                !shadow.open_orders.is_empty()
+                    || shadow.positions.iter().any(|position| {
+                        position.symbol == Symbol::BtcUsdt
+                            && Decimal::from_str(&position.position_amt).unwrap_or(Decimal::ZERO)
+                                != Decimal::ZERO
+                    })
+            })
+        {
+            blockers.push("open_position_or_order".to_string());
+        }
+
+        let lock_key = format!(
+            "mainnet_auto_live:{}:{}:{}:{}:{:?}",
+            LiveEnvironment::Mainnet,
+            signal.symbol,
+            signal.timeframe,
+            signal.open_time,
+            signal.side
+        );
+        if self
+            .repository
+            .get_live_intent_lock(&lock_key)
+            .await?
+            .is_some()
+        {
+            self.append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                session_id: &session_id,
+                outcome: MainnetAutoDecisionOutcome::SkippedDuplicate,
+                signal: &signal,
+                reference: reference.snapshot.as_ref(),
+                blocking_reasons: vec!["duplicate_signal_detected".to_string()],
+                would_submit: false,
+                message: "Duplicate MAINNET auto live signal suppressed.",
+            })
+            .await?;
+            return Ok(());
+        }
+
+        let mut lock = LiveIntentLock {
+            key: lock_key,
+            environment: LiveEnvironment::Mainnet,
+            symbol: signal.symbol,
+            timeframe: signal.timeframe,
+            signal_id: signal.id.clone(),
+            signal_open_time: signal.open_time,
+            signal_side: signal.side,
+            intent_hash: None,
+            order_id: None,
+            status: LiveIntentLockStatus::Created,
+            block_reason: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.repository.upsert_live_intent_lock(&lock).await?;
+
+        let rules = live_status.symbol_rules.clone();
+        let shadow = live_status.reconciliation.shadow.clone();
+        if rules.is_none() {
+            blockers.push("symbol_rules_stale_or_missing".to_string());
+        }
+        if shadow.is_none() {
+            blockers.push("shadow_state_ambiguous".to_string());
+        }
+        let mut preview = None;
+        if blockers.is_empty() {
+            let built = build_live_order_preview(LiveIntentInput {
+                environment: LiveEnvironment::Mainnet,
+                symbol: Symbol::BtcUsdt,
+                settings: settings.clone(),
+                rules: rules.expect("checked above"),
+                shadow: shadow.expect("checked above"),
+                latest_signal: Some(signal.clone()),
+                order_type: LiveOrderType::Market,
+                reference_price: reference.price,
+                reference_price_fresh: true,
+                reference_price_snapshot: reference.snapshot.clone(),
+                reference_price_blocking_reason: reference.blocking_reason,
+                limit_price: None,
+                mainnet_auto_live: true,
+                now_ms: now_ms(),
+            });
+            blockers.extend(
+                built
+                    .blocking_reasons
+                    .iter()
+                    .map(|reason| reason.as_str().to_string()),
+            );
+            if let Some(intent) = built.intent.as_ref() {
+                let estimated_notional =
+                    Decimal::from_str(&intent.sizing.estimated_notional).unwrap_or(Decimal::ZERO);
+                if estimated_notional > Decimal::new(80, 0) {
+                    blockers.push("risk_budget_max_notional_exceeded".to_string());
+                }
+                lock.intent_hash = Some(intent.intent_hash.clone());
+            }
+            preview = Some(built);
+        }
+        blockers.sort();
+        blockers.dedup();
+        if !blockers.is_empty() {
+            lock.status = LiveIntentLockStatus::Blocked;
+            lock.block_reason = Some(LiveBlockingReason::MainnetAutoBlocked);
+            lock.updated_at = now_ms();
+            self.repository.upsert_live_intent_lock(&lock).await?;
+            let outcome = if blockers.iter().any(|blocker| blocker == "open_order") {
+                MainnetAutoDecisionOutcome::SkippedOpenOrder
+            } else if blockers
+                .iter()
+                .any(|blocker| blocker.contains("open_position"))
+            {
+                MainnetAutoDecisionOutcome::SkippedOpenPosition
+            } else {
+                MainnetAutoDecisionOutcome::LiveSubmitBlocked
+            };
+            let decision = self
+                .append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                    session_id: &session_id,
+                    outcome,
+                    signal: &signal,
+                    reference: reference.snapshot.as_ref(),
+                    blocking_reasons: blockers.clone(),
+                    would_submit: false,
+                    message: "MAINNET auto live signal blocked before submit.",
+                })
+                .await?;
+            auto_status.last_decision_id = Some(decision.id);
+            auto_status.last_decision_outcome = Some(outcome);
+            auto_status.current_blockers = blockers.clone();
+            auto_status.blocking_reasons = blockers;
+            auto_status.last_signal_id = Some(signal.id.clone());
+            auto_status.last_signal_open_time = Some(signal.open_time);
+            auto_status.last_heartbeat_at = Some(now_ms());
+            auto_status.updated_at = now_ms();
+            self.repository
+                .save_mainnet_auto_status(&auto_status)
+                .await?;
+            return Ok(());
+        }
+
+        let preview = preview.expect("preview built when blockers are empty");
+        let Some(intent) = preview.intent.as_ref() else {
+            return Ok(());
+        };
+        let intent_id = intent.id.clone();
+        {
+            let mut state = self.state.lock().await;
+            state.live_status.intent_preview = Some(preview.clone());
+            state.live_status.updated_at = now_ms();
+        }
+        self.publisher
+            .publish(OutboundEvent::LiveIntentPreviewUpdated(Box::new(
+                preview.clone(),
+            )));
+        let result = self
+            .execute_live_current_preview_with_policy(
+                LiveExecutionRequest {
+                    intent_id: Some(intent_id),
+                    confirm_testnet: false,
+                    confirm_mainnet_canary: false,
+                    confirmation_text: None,
+                },
+                LiveExecutionPolicy::MainnetAutoLive {
+                    session_id: session_id.clone(),
+                },
+            )
+            .await?;
+        if let Some(order) = result.order.as_ref() {
+            lock.order_id = Some(order.id.clone());
+        }
+        lock.status = if result.accepted {
+            LiveIntentLockStatus::Submitted
+        } else {
+            LiveIntentLockStatus::Blocked
+        };
+        lock.block_reason = result.blocking_reason;
+        lock.updated_at = now_ms();
+        self.repository.upsert_live_intent_lock(&lock).await?;
+        let outcome = if result.accepted {
+            MainnetAutoDecisionOutcome::LiveSubmitRequested
+        } else {
+            MainnetAutoDecisionOutcome::LiveSubmitBlocked
+        };
+        let decision = self
+            .append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                session_id: &session_id,
+                outcome,
+                signal: &signal,
+                reference: reference.snapshot.as_ref(),
+                blocking_reasons: result
+                    .blocking_reason
+                    .map(|reason| vec![reason.as_str().to_string()])
+                    .unwrap_or_default(),
+                would_submit: result.accepted,
+                message: &result.message,
+            })
+            .await?;
+        auto_status.last_decision_id = Some(decision.id);
+        auto_status.last_decision_outcome = Some(outcome);
+        auto_status.last_signal_id = Some(signal.id);
+        auto_status.last_signal_open_time = Some(signal.open_time);
+        auto_status.last_order_id = result.order.as_ref().map(|order| order.id.clone());
+        if result.accepted {
+            auto_status.live_orders_submitted += 1;
+        }
+        auto_status.current_blockers = result
+            .blocking_reason
+            .map(|reason| vec![reason.as_str().to_string()])
+            .unwrap_or_default();
+        auto_status.blocking_reasons = auto_status.current_blockers.clone();
+        auto_status.last_heartbeat_at = Some(now_ms());
+        auto_status.updated_at = now_ms();
+        self.repository
+            .save_mainnet_auto_status(&auto_status)
+            .await?;
+        info!(
+            event = if result.accepted { "auto_live_submit_requested" } else { "auto_live_submit_blocked" },
+            session_id = %session_id,
+            "MAINNET auto live signal processed"
+        );
+        Ok(())
+    }
+
+    async fn append_mainnet_auto_live_decision(
+        &self,
+        input: MainnetAutoLiveDecisionInput<'_>,
+    ) -> AppResult<MainnetAutoDecisionEvent> {
+        let settings = self.state.lock().await.settings.clone();
+        let risk_budget = self.mainnet_auto_risk_budget().await?;
+        let mut aso_settings_snapshot = BTreeMap::new();
+        aso_settings_snapshot.insert("aso_length".to_string(), settings.aso_length.to_string());
+        aso_settings_snapshot.insert("aso_mode".to_string(), format!("{:?}", settings.aso_mode));
+        aso_settings_snapshot.insert(
+            "timeframe".to_string(),
+            settings.timeframe.as_str().to_string(),
+        );
+        let decision = MainnetAutoDecisionEvent {
+            id: format!("mnauto_decision_{}", Uuid::new_v4().simple()),
+            session_id: input.session_id.to_string(),
+            mode: MainnetAutoRunMode::Live,
+            outcome: input.outcome,
+            environment: LiveEnvironment::Mainnet,
+            symbol: input.signal.symbol,
+            timeframe: input.signal.timeframe,
+            closed_candle_open_time: Some(input.signal.open_time),
+            signal_id: Some(input.signal.id.clone()),
+            signal_side: Some(input.signal.side),
+            strategy_id: "aso_closed_candle_v1".to_string(),
+            aso_settings_snapshot,
+            risk_budget_snapshot_id: risk_budget.budget_id,
+            reference_price_source: input.reference.and_then(|snapshot| snapshot.source.clone()),
+            reference_price_age_ms: input.reference.and_then(|snapshot| snapshot.age_ms),
+            intent_hash: None,
+            would_submit: input.would_submit,
+            blocking_reasons: input.blocking_reasons,
+            message: input.message.to_string(),
+            created_at: now_ms(),
+        };
+        self.repository
+            .append_mainnet_auto_decision(&decision)
+            .await?;
+        Ok(decision)
     }
 
     async fn process_market_event(
@@ -5059,6 +5895,7 @@ impl AppService {
             let _ = self
                 .maybe_auto_execute_signal(signal.clone(), event.candle.close)
                 .await;
+            let _ = self.maybe_mainnet_auto_execute_signal(signal.clone()).await;
         }
         while let Some(trade) = new_trades.pop_front() {
             self.repository.append_trade(&trade).await?;
@@ -6201,6 +7038,18 @@ fn write_json_file<T: Serialize>(dir: &Path, file: &str, value: &T) -> AppResult
     fs::write(dir.join(file), bytes)
         .map_err(|error| AppError::Live(format!("failed to write evidence {file}: {error}")))?;
     Ok(())
+}
+
+fn artifact_root() -> PathBuf {
+    let mut current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        if current.join("AGENTS.md").is_file() && current.join("docs").is_dir() {
+            return current.join("artifacts");
+        }
+        if !current.pop() {
+            return PathBuf::from("artifacts");
+        }
+    }
 }
 
 fn write_json_lines_file<T: Serialize>(dir: &Path, file: &str, values: &[T]) -> AppResult<()> {

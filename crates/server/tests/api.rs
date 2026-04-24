@@ -1498,6 +1498,40 @@ async fn mainnet_auto_status_and_live_start_are_blocked_by_default() {
 }
 
 #[tokio::test]
+async fn mainnet_auto_live_start_endpoint_requires_exact_payload_confirmation() {
+    let (router, exchange) = mainnet_auto_test_router().await;
+
+    let start_response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/mainnet-auto/start")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "symbol": "BTCUSDT",
+                        "duration_minutes": 15,
+                        "order_type": "MARKET",
+                        "confirmation_text": "WRONG"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_response.status(), StatusCode::OK);
+    let body = response_json(start_response).await;
+    assert_ne!(body["state"], "live_running");
+    assert!(body["current_blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "mainnet_auto_session_confirmation_missing"));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn mainnet_auto_dry_run_endpoints_record_decisions_without_orders() {
     let (router, exchange) = mainnet_auto_test_router().await;
 

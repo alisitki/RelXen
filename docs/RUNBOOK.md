@@ -155,6 +155,17 @@ Live MAINNET auto start remains fail-closed unless all of these are true in a fu
 
 Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded one `dry_run_would_submit` decision, kept live start `config_blocked`, and submitted no order.
 
+Mainnet Auto Live Support v1 adds the future live start surface but does not run it by default. The endpoint requires a typed payload with `symbol=BTCUSDT`, `duration_minutes=15`, `order_type=MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`; it also requires `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, a live risk budget, fresh readiness/shadow/reference state, flat start, one-way/single-asset account mode, leverage `<=5`, and watchdog/evidence/lesson readiness. See [MAINNET_AUTO_LIVE_TRIAL_PLAN.md](./MAINNET_AUTO_LIVE_TRIAL_PLAN.md).
+
+Future live trial helper commands, not to run without a separate explicit execution task:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --precheck
+RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --heartbeat
+RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --summary
+RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --flat-check
+```
+
 If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. If env source is enabled with missing or partial variables, the UI/API report env credential blockers and paper mode remains usable. `.env` is local-only operator convenience, not production-grade secret storage; never commit it or put raw secrets in SQLite, frontend storage, logs, screenshots, docs, reports, or evidence bundles.
 
 ## Live Readiness States

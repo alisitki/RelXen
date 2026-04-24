@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Credential-selected MAINNET auto dry-run complete.
+Mainnet Auto Live Support v1 implemented and verification gate complete.
 
 ## Current Status
 
@@ -19,7 +19,7 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms and has
 - Dedicated Binance position-mode and multi-assets-mode checks are used before live execution gates can pass.
 - User-data streams force a reconnect/REST repair before the 24-hour WebSocket lifecycle limit.
 - MAINNET manual canary execution is implemented behind `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` by default, a configured risk profile, arming, fresh shadow/rules/account state, one-way/single-asset mode, exact operator confirmation, and all normal execution gates.
-- MAINNET auto-execution remains unavailable.
+- MAINNET auto live execution remains disabled by default. Mainnet Auto Live Support v1 now implements the gated future 15-minute `BTCUSDT` live session path, but no live auto session was run in this batch.
 - The bounded TESTNET soak drill is documented in `docs/TESTNET_SOAK_RUNBOOK.md`.
 - Evidence export scripts write secret-safe artifacts under `artifacts/testnet-soak/<timestamp>/`.
 - The current real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
@@ -36,6 +36,7 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms and has
 - Shareable RC UI cleanup added a top safety status strip and clearer LIVE ACCESS sections for credential, readiness/shadow/account, preview/preflight, safety/canary controls, orders/fills, and advanced details. No trading behavior was added and no order was submitted in the cleanup batch.
 - MAINNET auto infrastructure v1 now exists as default-off infrastructure only. It adds typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status endpoints, live-start fail-closed blocking, headless helper scripts, dry-run evidence export under `artifacts/mainnet-auto/<timestamp>/`, and lesson reports. Dry-run mode can inspect live status and record ASO decision outcomes without submitting orders. Live MAINNET auto remains disabled by default and requires a later explicit live-run task before any real order can be considered.
 - Credential-selected MAINNET auto dry-run evidence is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It ran against the operator DB with `env-mainnet` explicitly selected and validated, `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`, `RELXEN_MAINNET_AUTO_MODE=dry_run`, and the dry-run risk profile `mainnet-auto-operator-dry-run-v1`. The run refreshed mainnet readiness/shadow, confirmed `BTCUSDT`, one-way mode, single-asset mode, leverage `5`, no open BTCUSDT mainnet order, no BTCUSDT position, mainnet canary disabled, kill switch released, and live auto disabled. One dry-run decision was recorded as `dry_run_would_submit` using REST mark price with age `421 ms`; `orders.json` and `fills.json` are empty, `final_verdict.json` says `no_live_order_submitted`, and live-start verification returned `config_blocked` with live auto config disabled.
+- Mainnet Auto Live Support v1 adds typed live start support for a future session only: `BTCUSDT`, `MARKET`, 15 minutes, exact session confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, server config gates, fresh mainnet credential/readiness/shadow/rules/reference gates, flat start, one-way/single-asset mode, leverage `<=5`, risk budget, watchdog, evidence logging, and lesson reporting. Closed-candle ASO signals can submit only through an internal `live_running` auto session policy; the public manual execute endpoint remains TESTNET/canary confirmed. Mocked-adapter tests prove the path without using a real exchange order call.
 - The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records real TESTNET credential validation, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart/recent-window repair, reconnect repair, and TESTNET auto proof with duplicate suppression.
 - The latest canary report is `docs/LATEST_MAINNET_CANARY_REPORT.md`.
 
@@ -77,11 +78,11 @@ Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent 
 
 ## Current Focus
 
-The project has completed the first credential-selected MAINNET auto dry-run on the operator DB. It has env-backed credential validation evidence, real TESTNET soak evidence, two bounded manual MAINNET canary execution bundles, the follow-up cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, a cleaner operator-facing dashboard, mainnet-auto dry-run infrastructure, and an operator-DB dry-run evidence bundle with no live order submitted. Mainnet auto live execution remains default-off, config-blocked, and not approved.
+The project has completed the first credential-selected MAINNET auto dry-run on the operator DB and now has Mainnet Auto Live Support v1 implemented but unrun. It has env-backed credential validation evidence, real TESTNET soak evidence, two bounded manual MAINNET canary execution bundles, the cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, a cleaner operator-facing dashboard, mainnet-auto dry-run infrastructure, an operator-DB dry-run evidence bundle with no live order submitted, and a gated future 15-minute live-auto support path. Mainnet auto live execution remains default-off, unrun, and not approved by default.
 
 ## declared_next_task
 
-Prepare an explicit live-auto plan only if the operator wants to continue. Do not enable or run live MAINNET auto until a separate approved live-auto batch rechecks gates, budget, watchdog, and evidence requirements.
+Prepare a separate explicit execution batch if the operator still wants the 15-minute live MAINNET auto trial. Do not enable or run live MAINNET auto in normal startup.
 
 ## done_when
 
@@ -96,6 +97,8 @@ Prepare an explicit live-auto plan only if the operator wants to continue. Do no
 - The dashboard shows safety-critical state in plain text by default, including MAINNET auto blocked, MAINNET canary disabled/enabled, kill switch state, active symbol, current mode, blockers, and latest order/fill truth.
 - `/api/live/mainnet-auto/status`, dry-run start/stop, decisions, lessons, risk-budget, and evidence-export endpoints exist and show live auto blocked by default.
 - The operator-DB MAINNET auto dry-run evidence bundle records `dry_run_would_submit`, no live order submission, empty `orders.json` / `fills.json`, a blocked live-start check, and `lessons.md` / `lessons.json`.
+- `POST /api/live/mainnet-auto/start` accepts only the gated future live session shape and remains blocked unless server live config, exact session confirmation, risk, watchdog, and live-state gates pass.
+- `scripts/run_mainnet_auto_live_trial.sh` and enhanced `scripts/show_mainnet_auto_status.sh` exist for a future explicit execution batch.
 - `docs/LATEST_MAINNET_CANARY_REPORT.md` records the pass outcome, audit result, and post-canary recommendation.
 - No auto execution, no conditional/algo orders, no heatmap/liquidation decision layer, and no hidden bypass path are used.
 

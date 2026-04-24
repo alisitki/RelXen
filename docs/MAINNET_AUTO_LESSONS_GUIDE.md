@@ -37,6 +37,8 @@ The report includes:
 
 The 2026-04-24 operator-DB dry-run generated `ready_for_explicit_live_trial` from the lesson generator after one `dry_run_would_submit` decision. For operator handoff, interpret that as `ready_to_prepare_explicit_live_auto_plan`, not approval to enable live MAINNET auto.
 
+Mainnet Auto Live Support v1 can generate live-session lessons after a future approved 15-minute `BTCUSDT` run. Those reports may include live order counts, fills, watchdog stop reason, PnL/fee fields when available, and final flat/open state. They remain analysis only and must not authorize another run automatically.
+
 ## Review Checklist
 
 Before considering any future live MAINNET auto task, confirm:

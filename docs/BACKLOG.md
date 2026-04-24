@@ -94,15 +94,16 @@
 - Shadow/reconciliation environment mismatch now blocks readiness, preview, and execution gates.
 - MAINNET auto infrastructure v1 added default-off typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status APIs, live-start fail-closed blocking, headless helper scripts, evidence export, and lesson reports. No TESTNET or MAINNET order is submitted by the dry-run path.
 - Credential-selected MAINNET auto dry-run completed on the operator DB under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`: `env-mainnet` was selected/validated, mainnet readiness/shadow refreshed, one dry-run decision recorded `dry_run_would_submit`, live-start remained `config_blocked`, and no live order/fill was submitted.
+- Mainnet Auto Live Support v1 implemented the gated future live path without running it: typed `BTCUSDT` / 15-minute / `MARKET` start request, exact session confirmation, server config gates, live-running session state, closed-candle ASO signal handling through mocked adapter tests, one-position/one-in-flight enforcement, runtime watchdog, live evidence/lesson support, and headless live-trial/status scripts.
 
 ## Immediate Next Task
 
-Review the operator-DB MAINNET auto dry-run evidence and decide whether to write a separate explicit live-auto plan. Do not run live MAINNET auto until that separate plan is approved and all gates are rechecked.
+Prepare a separate explicit execution batch if the operator still wants the 15-minute live trial. Do not run live MAINNET auto until that separate execution batch rechecks gates.
 
 ## Deferred Live Execution Work
 
 - Broader mainnet enablement policy after the bounded manual canary evidence.
-- Real MAINNET auto live execution. Infrastructure and dry-run exist, but live mode remains config-gated, operator-armed, watchdog-protected, and default-off.
+- Real MAINNET auto live execution. Support exists, but live mode remains config-gated, operator-armed, watchdog-protected, default-off, and unrun.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - Hedge mode and multi-assets mode support if explicitly designed and tested.
 - Portfolio-level exposure controls beyond the active symbol.

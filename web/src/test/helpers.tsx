@@ -267,9 +267,20 @@ export function makeLiveStatus(overrides: LiveStatusOverrides = {}): LiveStatusS
         require_lessons_report: true,
         updated_at: 1
       },
+      watchdog: {
+        running: false,
+        last_check_at: null,
+        last_stop_reason: null,
+        last_message: "Mainnet auto watchdog is idle."
+      },
       session_id: null,
       started_at: null,
+      expires_at: null,
       stopped_at: null,
+      last_heartbeat_at: null,
+      last_signal_id: null,
+      last_signal_open_time: null,
+      last_order_id: null,
       last_decision_id: null,
       last_decision_outcome: null,
       last_watchdog_stop_reason: null,
@@ -333,6 +344,10 @@ export function makeLiveStatus(overrides: LiveStatusOverrides = {}): LiveStatusS
       risk_budget: {
         ...status.mainnet_auto.risk_budget,
         ...overrides.mainnet_auto?.risk_budget
+      },
+      watchdog: {
+        ...status.mainnet_auto.watchdog,
+        ...overrides.mainnet_auto?.watchdog
       }
     }
   };

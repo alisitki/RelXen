@@ -6,6 +6,8 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 
 The RC dashboard has been cleaned up for operator/friend review with a top safety summary and clearer LIVE ACCESS sections. This UI pass did not add trading behavior or submit any order.
 
+Mainnet Auto Live Support v1 is now implemented as a gated code path only. `POST /api/live/mainnet-auto/start` requires server live config, `RELXEN_MAINNET_AUTO_MODE=live`, `BTCUSDT`, `MARKET`, a 15-minute duration, the exact session confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, fresh live gates, risk budget, watchdog, and evidence/lesson logging. No real MAINNET auto session has been run, and MAINNET auto remains disabled by default.
+
 ## V1 Scope
 
 - Paper trading remains supported and isolated from live exchange truth.
@@ -18,7 +20,7 @@ The RC dashboard has been cleaned up for operator/friend review with a top safet
 - Signals are generated only from closed candles using the Average Sentiment Oscillator.
 - Runtime recovery reconciles bounded REST ranges after reconnects and emits `resync_required` when deterministic continuity cannot be proven.
 - Live credentials use an OS secure-storage abstraction by default; local `.env` credentials can be enabled for operator convenience. SQLite stores masked metadata and source only.
-- Live readiness can validate credentials, fetch read-only account snapshots and symbol rules, check dedicated position-mode and multi-assets-mode endpoints, arm live mode, start/stop shadow sync, build `MARKET` / `LIMIT` intent previews, run testnet preflight checks, submit confirmed TESTNET or gated MAINNET canary orders, cancel confirmed orders, flatten an active-symbol position when reconciliation is coherent, engage/release the kill switch, and start/stop TESTNET auto-execution.
+- Live readiness can validate credentials, fetch read-only account snapshots and symbol rules, check dedicated position-mode and multi-assets-mode endpoints, arm live mode, start/stop shadow sync, build `MARKET` / `LIMIT` intent previews, run testnet preflight checks, submit confirmed TESTNET or gated MAINNET canary orders, cancel confirmed orders, flatten an active-symbol position when reconciliation is coherent, engage/release the kill switch, start/stop TESTNET auto-execution, and prepare a default-off MAINNET auto live session path for a future explicit run.
 
 ## Workspace Layout
 
@@ -109,9 +111,9 @@ Defaults are documented in `.env.example`.
 - `RELXEN_CREDENTIAL_SOURCE`: set to `env` to load local operator credentials from `.env`. This setting is authoritative.
 - `RELXEN_ENABLE_ENV_CREDENTIALS`: compatibility alias; `true` enables env credentials only when `RELXEN_CREDENTIAL_SOURCE` is unset.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables manual MAINNET canary submission path when every other gate passes, default `false`.
-- `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION`: enables live MAINNET auto only when a later explicit live-run batch also arms and starts it; default `false`.
+- `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION`: enables live MAINNET auto only when a later explicit live-run batch also arms and starts it with exact confirmation; default `false`.
 - `RELXEN_MAINNET_AUTO_MODE`: mainnet-auto run mode, default `dry_run`. Dry-run records decisions and evidence but never submits orders.
-- `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES`, `RELXEN_MAINNET_AUTO_MAX_ORDERS`, `RELXEN_MAINNET_AUTO_MAX_FILLS`, `RELXEN_MAINNET_AUTO_MAX_NOTIONAL`, `RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS`: typed mainnet-auto session budget inputs.
+- `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES`, `RELXEN_MAINNET_AUTO_MAX_ORDERS`, `RELXEN_MAINNET_AUTO_MAX_FILLS`, `RELXEN_MAINNET_AUTO_MAX_NOTIONAL`, `RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS`: typed mainnet-auto session budget inputs. The planned first live trial uses 15 minutes, emergency order/fill caps of 20, notional cap 80, and loss cap 5.
 - `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START`, `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP`, `RELXEN_MAINNET_AUTO_REQUIRE_MANUAL_CANARY_EVIDENCE`, `RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED`, `RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED`: fail-closed mainnet-auto safety requirements.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for bounded soak validation, default `false`.
 - `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: optional env credential values when env source is enabled. `.env.example` contains placeholders only; never commit `.env`.
@@ -165,7 +167,7 @@ Critical UI meaning is also represented textually, for example `▲ LONG`, `▼ 
 
 - Broad MAINNET enablement beyond the explicit manual canary gate.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
-- Live MAINNET auto-execution. Dry-run infrastructure exists, but live mode remains default-off and requires a separate explicit live-run task.
+- Live MAINNET auto-execution by default. The gated support path exists, but no real live-auto session has been run and a separate explicit execution task is still required.
 - Broader incident automation beyond the documented soak evidence workflow.
 - Liquidation heatmap/liquidation-context module; ASO remains the active strategy signal and no new live decision layer is added in the post-canary safety-hardening flow.
 - Tauri packaging.

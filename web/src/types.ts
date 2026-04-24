@@ -409,14 +409,27 @@ export interface MainnetAutoRiskBudget {
   updated_at: number;
 }
 
+export interface MainnetAutoWatchdogStatus {
+  running: boolean;
+  last_check_at: number | null;
+  last_stop_reason: string | null;
+  last_message: string | null;
+}
+
 export interface MainnetAutoStatus {
   state: MainnetAutoState;
   mode: MainnetAutoRunMode;
   config: MainnetAutoConfig;
   risk_budget: MainnetAutoRiskBudget;
+  watchdog: MainnetAutoWatchdogStatus;
   session_id: string | null;
   started_at: number | null;
+  expires_at: number | null;
   stopped_at: number | null;
+  last_heartbeat_at: number | null;
+  last_signal_id: string | null;
+  last_signal_open_time: number | null;
+  last_order_id: string | null;
   last_decision_id: string | null;
   last_decision_outcome: MainnetAutoDecisionOutcome | null;
   last_watchdog_stop_reason: string | null;

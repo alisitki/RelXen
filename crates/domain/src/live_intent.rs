@@ -24,6 +24,7 @@ pub struct LiveIntentInput {
     pub reference_price_snapshot: Option<LiveReferencePriceSnapshot>,
     pub reference_price_blocking_reason: Option<LiveBlockingReason>,
     pub limit_price: Option<Decimal>,
+    pub mainnet_auto_live: bool,
     pub now_ms: i64,
 }
 
@@ -71,7 +72,7 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
         );
     };
 
-    if input.environment == LiveEnvironment::Mainnet {
+    if input.environment == LiveEnvironment::Mainnet && !input.mainnet_auto_live {
         if input.order_type != LiveOrderType::Limit {
             blocking.push(LiveBlockingReason::MainnetCanaryLimitRequired);
             errors.push("MAINNET canary requires a non-marketable LIMIT order".to_string());
@@ -85,6 +86,30 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
         } else if !input.reference_price_fresh || input.reference_price <= Decimal::ZERO {
             blocking.push(LiveBlockingReason::ReferencePriceUnavailable);
             errors.push("fresh reference price is unavailable for MAINNET canary".to_string());
+        }
+        if !blocking.is_empty() {
+            return blocked_preview(
+                input.now_ms,
+                blocking,
+                errors,
+                input.reference_price_snapshot.clone(),
+            );
+        }
+    }
+    if input.environment == LiveEnvironment::Mainnet && input.mainnet_auto_live {
+        if input.order_type != LiveOrderType::Market {
+            blocking.push(LiveBlockingReason::ExecutionNotImplemented);
+            errors.push("MAINNET auto live v1 supports MARKET intents only".to_string());
+        }
+        if let Some(reason) = input.reference_price_blocking_reason {
+            blocking.push(reason);
+            errors.push(format!(
+                "fresh reference price is unavailable for MAINNET auto: {}",
+                reason.as_str()
+            ));
+        } else if !input.reference_price_fresh || input.reference_price <= Decimal::ZERO {
+            blocking.push(LiveBlockingReason::ReferencePriceUnavailable);
+            errors.push("fresh reference price is unavailable for MAINNET auto".to_string());
         }
         if !blocking.is_empty() {
             return blocked_preview(
@@ -121,7 +146,7 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
             rounded
         }
     };
-    if input.environment == LiveEnvironment::Mainnet {
+    if input.environment == LiveEnvironment::Mainnet && !input.mainnet_auto_live {
         let marketable = match side {
             LiveOrderSide::Buy => price >= input.reference_price,
             LiveOrderSide::Sell => price <= input.reference_price,
@@ -153,10 +178,14 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
             } else {
                 None
             },
-            marketable_after_rounding: Some(match side {
-                LiveOrderSide::Buy => price >= input.reference_price,
-                LiveOrderSide::Sell => price <= input.reference_price,
-            }),
+            marketable_after_rounding: if input.order_type == LiveOrderType::Limit {
+                Some(match side {
+                    LiveOrderSide::Buy => price >= input.reference_price,
+                    LiveOrderSide::Sell => price <= input.reference_price,
+                })
+            } else {
+                None
+            },
             checked_at: input.now_ms,
         })
     } else {
@@ -297,7 +326,9 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
 
     let mut message =
         "TESTNET PREVIEW READY. Actual placement is testnet-only and gated.".to_string();
-    if input.environment != LiveEnvironment::Testnet {
+    if input.environment == LiveEnvironment::Mainnet && input.mainnet_auto_live {
+        message = "MAINNET AUTO LIVE PREVIEW READY. Execution requires a live auto session, watchdog, risk gates, and exchange-authoritative reconciliation.".to_string();
+    } else if input.environment != LiveEnvironment::Testnet {
         message = "MAINNET CANARY PREVIEW READY. Preflight is unavailable; execution requires server canary gates and exact operator confirmation.".to_string();
     }
 

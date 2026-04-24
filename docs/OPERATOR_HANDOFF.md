@@ -14,6 +14,8 @@ The second canary exposed a cancel payload ergonomics issue. That issue is fixed
 
 The dashboard RC UI has also been cleaned for review: the top safety strip makes `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED`, kill-switch state, active symbol, current state, and position state visible without opening advanced details. MAINNET auto dry-run infrastructure now exists for status, decisions, evidence, and lessons, but live MAINNET auto remains disabled by default.
 
+Mainnet Auto Live Support v1 is implemented for a future explicitly approved 15-minute `BTCUSDT` session, but no real live-auto session has been run. The future start path is server-config-gated, session-confirmed, watchdog-protected, and evidence-logged; it remains blocked unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M` are supplied for that session.
+
 ## What Is Safe To Run
 
 Normal safe local operation:
@@ -39,11 +41,20 @@ curl http://localhost:3000/api/live/fills
 curl http://localhost:3000/api/live/mainnet-auto/status
 ```
 
+Headless mainnet-auto status helpers:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --precheck
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --summary
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh --flat-check
+```
+
 TESTNET execution remains available only through explicit operator confirmation and normal fail-closed gates. MAINNET canary execution remains disabled unless the explicit server-side canary flag is enabled for a separate canary session.
 
 ## What Is Not Enabled
 
 - MAINNET auto live execution must remain blocked unless a later explicit live-auto task enables it. Current safe use is dry-run only.
+- The implemented live-auto start path is not an approval to run; use `docs/MAINNET_AUTO_LIVE_TRIAL_PLAN.md` for the future execution checklist.
 - Broad MAINNET operation is not enabled.
 - Conditional/algo orders are not supported.
 - Symbol scope is still `BTCUSDT` / `BTCUSDC`.
