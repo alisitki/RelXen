@@ -59,6 +59,8 @@ export type LiveCredentialValidationStatus =
   | "secure_store_unavailable";
 export type LiveBlockingReason =
   | "no_active_credential"
+  | "env_credentials_missing"
+  | "env_credential_partial"
   | "secure_store_unavailable"
   | "validation_failed"
   | "validation_missing"
@@ -80,8 +82,13 @@ export type LiveBlockingReason =
   | "mainnet_execution_blocked"
   | "mainnet_canary_disabled"
   | "mainnet_canary_risk_profile_missing"
+  | "mainnet_canary_limit_required"
+  | "mainnet_canary_limit_marketable"
   | "mainnet_confirmation_missing"
   | "mainnet_auto_blocked"
+  | "reference_price_unavailable"
+  | "reference_price_stale"
+  | "reference_price_source_failed"
   | "stale_shadow_state"
   | "preview_mismatch"
   | "execution_status_unknown"
@@ -307,6 +314,7 @@ export interface LiveCredentialSummary {
   id: string;
   alias: string;
   environment: LiveEnvironment;
+  source: "secure_store" | "env";
   api_key_hint: string;
   validation_status: LiveCredentialValidationStatus;
   last_validated_at: number | null;
@@ -495,11 +503,35 @@ export interface LiveOrderIntent {
   built_at: number;
 }
 
+export interface LiveReferencePriceSnapshot {
+  environment: LiveEnvironment;
+  symbol: SymbolCode;
+  price: string | null;
+  source: string | null;
+  observed_at: number | null;
+  fetched_at: number | null;
+  age_ms: number | null;
+  stale: boolean;
+  failure_reason: string | null;
+  blocking_reason: LiveBlockingReason | null;
+}
+
+export interface LiveMarketabilityCheck {
+  reference_price: string | null;
+  reference_price_source: string | null;
+  reference_price_age_ms: number | null;
+  rounded_order_price: string | null;
+  marketable_after_rounding: boolean | null;
+  checked_at: number;
+}
+
 export interface LiveOrderPreview {
   built_at: number;
   intent: LiveOrderIntent | null;
   blocking_reasons: LiveBlockingReason[];
   validation_errors: string[];
+  reference_price?: LiveReferencePriceSnapshot | null;
+  marketability_check?: LiveMarketabilityCheck | null;
   message: string;
 }
 

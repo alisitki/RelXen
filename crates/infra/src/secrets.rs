@@ -56,6 +56,59 @@ impl SecretStore for OsSecretStore {
     }
 }
 
+pub struct EnvOverlaySecretStore {
+    delegate: Arc<dyn SecretStore>,
+    env_secrets: BTreeMap<String, LiveCredentialSecret>,
+}
+
+impl EnvOverlaySecretStore {
+    pub fn new(
+        delegate: Arc<dyn SecretStore>,
+        env_secrets: BTreeMap<String, LiveCredentialSecret>,
+    ) -> Self {
+        Self {
+            delegate,
+            env_secrets,
+        }
+    }
+
+    fn is_env_id(&self, id: &LiveCredentialId) -> bool {
+        self.env_secrets.contains_key(id.as_str())
+    }
+}
+
+#[async_trait]
+impl SecretStore for EnvOverlaySecretStore {
+    async fn store(&self, id: &LiveCredentialId, secret: &LiveCredentialSecret) -> AppResult<()> {
+        if self.is_env_id(id) {
+            return Err(AppError::Conflict(
+                "env-backed credentials are read-only".to_string(),
+            ));
+        }
+        self.delegate.store(id, secret).await
+    }
+
+    async fn read(&self, id: &LiveCredentialId) -> AppResult<LiveCredentialSecret> {
+        if let Some(secret) = self.env_secrets.get(id.as_str()) {
+            return Ok(secret.clone());
+        }
+        self.delegate.read(id).await
+    }
+
+    async fn delete(&self, id: &LiveCredentialId) -> AppResult<()> {
+        if self.is_env_id(id) {
+            return Err(AppError::Conflict(
+                "env-backed credentials are read-only".to_string(),
+            ));
+        }
+        self.delegate.delete(id).await
+    }
+
+    async fn ensure_available(&self) -> AppResult<()> {
+        self.delegate.ensure_available().await
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct MemorySecretStore {
     secrets: Arc<Mutex<BTreeMap<String, LiveCredentialSecret>>>,

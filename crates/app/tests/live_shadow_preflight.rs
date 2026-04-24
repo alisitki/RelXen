@@ -4,17 +4,18 @@ use std::sync::atomic::Ordering;
 
 use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceOptions};
 use relxen_domain::{
-    AsoMode, CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
-    LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
-    LiveExecutionRequest, LiveFillRecord, LiveKillSwitchRequest, LiveOrderSide, LiveOrderStatus,
-    LiveOrderType, LiveRiskLimits, LiveRiskProfile, LiveRuntimeState, LiveShadowBalance,
-    LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState, LiveUserDataEvent, Settings,
-    Symbol, Timeframe,
+    AsoMode, Candle, CreateLiveCredentialRequest, LiveAutoExecutorRequest,
+    LiveAutoExecutorStateKind, LiveBlockingReason, LiveCancelRequest,
+    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveFillRecord,
+    LiveKillSwitchRequest, LiveOrderSide, LiveOrderStatus, LiveOrderType, LiveRiskLimits,
+    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
+    LiveShadowStreamState, LiveUserDataEvent, Settings, Symbol, Timeframe,
 };
+use rust_decimal::Decimal;
 
 use support::{
-    arc, candle_with_bull_at_open_time, latest_closed_open_time, stream_event, FakeLiveExchange,
-    MockRepository, SequenceMarket, StaticMetrics, TestSecretStore,
+    arc, candle_with_bull_at_open_time, fake_reference_price, latest_closed_open_time,
+    stream_event, FakeLiveExchange, MockRepository, SequenceMarket, StaticMetrics, TestSecretStore,
 };
 
 async fn live_shadow_service(
@@ -28,17 +29,6 @@ async fn live_shadow_service_with(
     subscriptions: Vec<Vec<Result<relxen_app::MarketStreamEvent, relxen_app::AppError>>>,
     options: ServiceOptions,
 ) -> std::sync::Arc<AppService> {
-    let repository = arc(MockRepository::default());
-    repository
-        .save_settings(&Settings {
-            aso_length: 2,
-            aso_mode: AsoMode::Intrabar,
-            auto_restart_on_apply: false,
-            paper_enabled: false,
-            ..Settings::default()
-        })
-        .await
-        .unwrap();
     let open_time = latest_closed_open_time(Timeframe::M1);
     let history = vec![
         candle_with_bull_at_open_time(
@@ -57,6 +47,26 @@ async fn live_shadow_service_with(
         ),
         candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 60.0, true),
     ];
+    live_shadow_service_with_history(exchange, subscriptions, options, history).await
+}
+
+async fn live_shadow_service_with_history(
+    exchange: std::sync::Arc<FakeLiveExchange>,
+    subscriptions: Vec<Vec<Result<relxen_app::MarketStreamEvent, relxen_app::AppError>>>,
+    options: ServiceOptions,
+    history: Vec<Candle>,
+) -> std::sync::Arc<AppService> {
+    let repository = arc(MockRepository::default());
+    repository
+        .save_settings(&Settings {
+            aso_length: 2,
+            aso_mode: AsoMode::Intrabar,
+            auto_restart_on_apply: false,
+            paper_enabled: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
     let service = AppService::new_with_live(
         AppMetadata::default(),
         repository,
@@ -125,6 +135,16 @@ fn permissive_risk_profile() -> LiveRiskProfile {
         },
         updated_at: relxen_app::now_ms(),
     }
+}
+
+fn mainnet_confirmation(intent: &relxen_domain::LiveOrderIntent) -> String {
+    format!(
+        "SUBMIT MAINNET {} LIMIT {} {} @ {}",
+        intent.side.as_binance(),
+        intent.symbol,
+        intent.quantity,
+        intent.price.as_deref().unwrap_or_default()
+    )
 }
 
 #[tokio::test]
@@ -451,7 +471,7 @@ async fn mainnet_canary_requires_server_gate_risk_profile_and_exact_confirmation
     service.arm_live().await.unwrap();
     service.start_live_shadow().await.unwrap();
     service
-        .build_live_intent_preview(LiveOrderType::Market, None)
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(19, 0)))
         .await
         .unwrap();
 
@@ -501,6 +521,407 @@ async fn mainnet_canary_requires_server_gate_risk_profile_and_exact_confirmation
 }
 
 #[tokio::test]
+async fn mainnet_canary_blocks_shadow_environment_mismatch() {
+    let service = live_shadow_service_with(
+        arc(FakeLiveExchange::default()),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential(&service).await;
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(19, 0)))
+        .await
+        .unwrap();
+    assert!(preview
+        .blocking_reasons
+        .contains(&LiveBlockingReason::ShadowStateAmbiguous));
+    let status = service.live_status().await.unwrap();
+    assert!(status
+        .execution
+        .blocking_reasons
+        .contains(&LiveBlockingReason::ShadowStateAmbiguous));
+}
+
+#[tokio::test]
+async fn mainnet_canary_blocks_market_and_rounded_marketable_limits() {
+    let service = live_shadow_service_with(
+        arc(FakeLiveExchange::default()),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let market_preview = service
+        .build_live_intent_preview(LiveOrderType::Market, None)
+        .await
+        .unwrap();
+    assert!(market_preview
+        .blocking_reasons
+        .contains(&LiveBlockingReason::MainnetCanaryLimitRequired));
+
+    let marketable_preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(2004, 2)))
+        .await
+        .unwrap();
+    assert!(marketable_preview
+        .blocking_reasons
+        .contains(&LiveBlockingReason::MainnetCanaryLimitMarketable));
+}
+
+#[tokio::test]
+async fn mainnet_canary_blocks_missing_reference_price() {
+    let open_time = latest_closed_open_time(Timeframe::M1);
+    let zero_reference_history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - 2 * Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 0.0, true),
+    ];
+    let service = live_shadow_service_with_history(
+        arc(FakeLiveExchange {
+            fail_reference_price: true,
+            ..FakeLiveExchange::default()
+        }),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+        zero_reference_history,
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(19, 0)))
+        .await
+        .unwrap();
+    assert!(preview
+        .blocking_reasons
+        .contains(&LiveBlockingReason::ReferencePriceUnavailable));
+}
+
+#[tokio::test]
+async fn mainnet_canary_blocks_stale_rest_reference_price() {
+    let exchange = arc(FakeLiveExchange::default());
+    let mut stale_reference =
+        fake_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt, "2000");
+    stale_reference.observed_at = Some(relxen_app::now_ms() - 60_000);
+    *exchange.reference_price.lock().unwrap() = Some(stale_reference);
+    let service = live_shadow_service_with(
+        exchange,
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            live_intent_ttl_ms: 1_000,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .engage_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+    service
+        .release_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(1999, 0)))
+        .await
+        .unwrap();
+    assert!(preview
+        .blocking_reasons
+        .contains(&LiveBlockingReason::ReferencePriceStale));
+    assert_eq!(
+        preview
+            .reference_price
+            .as_ref()
+            .and_then(|reference| reference.blocking_reason),
+        Some(LiveBlockingReason::ReferencePriceStale)
+    );
+}
+
+#[tokio::test]
+async fn mainnet_canary_refreshes_after_kill_switch_release_from_rest_mark_price() {
+    let open_time = latest_closed_open_time(Timeframe::M1);
+    let history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - 2 * Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 60.0, true),
+    ];
+    let service = live_shadow_service_with_history(
+        arc(FakeLiveExchange::default()),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+        history,
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .engage_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+    service
+        .release_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(1999, 0)))
+        .await
+        .unwrap();
+    assert!(preview.intent.is_some());
+    let reference = preview.reference_price.as_ref().unwrap();
+    assert_eq!(reference.source.as_deref(), Some("rest_mark_price"));
+    assert_eq!(reference.price.as_deref(), Some("2000"));
+    assert_eq!(
+        preview
+            .marketability_check
+            .as_ref()
+            .unwrap()
+            .marketable_after_rounding,
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn mainnet_submit_forces_reference_refresh_after_kill_switch_release() {
+    let exchange = arc(FakeLiveExchange::default());
+    let open_time = latest_closed_open_time(Timeframe::M1);
+    let mut history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - 2 * Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 60.0, true),
+    ];
+    for candle in &mut history {
+        candle.close = 2000.0;
+        candle.high = 2001.0;
+        candle.low = 1999.0;
+    }
+    let service = live_shadow_service_with_history(
+        exchange.clone(),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+        history,
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(1999, 0)))
+        .await
+        .unwrap();
+    let intent = preview.intent.clone().unwrap();
+    service
+        .engage_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+    service
+        .release_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let result = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: Some(intent.id.clone()),
+            confirm_testnet: false,
+            confirm_mainnet_canary: true,
+            confirmation_text: Some(mainnet_confirmation(&intent)),
+        })
+        .await
+        .unwrap();
+    assert!(result.accepted);
+    assert_eq!(exchange.submitted_orders.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn mainnet_submit_blocks_when_fresh_refresh_makes_limit_marketable() {
+    let exchange = arc(FakeLiveExchange::default());
+    *exchange.reference_price.lock().unwrap() = Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "1900",
+    ));
+    let open_time = latest_closed_open_time(Timeframe::M1);
+    let mut history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - 2 * Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            open_time - Timeframe::M1.duration_ms(),
+            40.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 60.0, true),
+    ];
+    for candle in &mut history {
+        candle.close = 2000.0;
+        candle.high = 2001.0;
+        candle.low = 1999.0;
+    }
+    let service = live_shadow_service_with_history(
+        exchange.clone(),
+        Vec::new(),
+        ServiceOptions {
+            enable_mainnet_canary_execution: true,
+            ..ServiceOptions::default()
+        },
+        history,
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_live_risk_profile(permissive_risk_profile())
+        .await
+        .unwrap();
+    service.arm_live().await.unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let preview = service
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(1999, 0)))
+        .await
+        .unwrap();
+    let intent = preview.intent.clone().unwrap();
+    service
+        .engage_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+    service
+        .release_live_kill_switch(LiveKillSwitchRequest {
+            reason: Some("test".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let result = service
+        .execute_live_current_preview(LiveExecutionRequest {
+            intent_id: Some(intent.id.clone()),
+            confirm_testnet: false,
+            confirm_mainnet_canary: true,
+            confirmation_text: Some(mainnet_confirmation(&intent)),
+        })
+        .await
+        .unwrap();
+    assert!(!result.accepted);
+    assert_eq!(
+        result.blocking_reason,
+        Some(LiveBlockingReason::MainnetCanaryLimitMarketable)
+    );
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn mainnet_execution_is_explicitly_blocked() {
     let service = live_shadow_service(arc(FakeLiveExchange::default())).await;
     let credential = service
@@ -520,7 +941,7 @@ async fn mainnet_execution_is_explicitly_blocked() {
     service.arm_live().await.unwrap();
     service.start_live_shadow().await.unwrap();
     service
-        .build_live_intent_preview(LiveOrderType::Market, None)
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(19, 0)))
         .await
         .unwrap();
 
@@ -767,7 +1188,7 @@ async fn mainnet_preflight_is_blocked_before_exchange_call() {
     service.refresh_live_readiness().await.unwrap();
     service.start_live_shadow().await.unwrap();
     service
-        .build_live_intent_preview(LiveOrderType::Market, None)
+        .build_live_intent_preview(LiveOrderType::Limit, Some(Decimal::new(19, 0)))
         .await
         .unwrap();
 

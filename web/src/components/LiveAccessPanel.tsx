@@ -89,6 +89,7 @@ export function LiveAccessPanel() {
       environment: selectedCredential.environment
     }));
   }, [selectedCredential]);
+  const selectedCredentialIsEnv = selectedCredential?.source === "env";
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -422,7 +423,7 @@ export function LiveAccessPanel() {
                 <option value="">New credential</option>
                 {credentials.map((credential) => (
                   <option key={credential.id} value={credential.id}>
-                    {credential.alias} · {credential.environment} · {credential.api_key_hint}
+                    {credentialLabel(credential)}
                   </option>
                 ))}
               </select>
@@ -431,7 +432,7 @@ export function LiveAccessPanel() {
               <input
                 aria-label="Live Alias"
                 value={draft.alias}
-                disabled={busy}
+                disabled={busy || selectedCredentialIsEnv}
                 onChange={(event) => setDraft((current) => ({ ...current, alias: event.target.value }))}
               />
             </Field>
@@ -439,7 +440,7 @@ export function LiveAccessPanel() {
               <select
                 aria-label="Live Environment"
                 value={draft.environment}
-                disabled={busy}
+                disabled={busy || selectedCredentialIsEnv}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, environment: event.target.value as LiveEnvironment }))
                 }
@@ -448,8 +449,8 @@ export function LiveAccessPanel() {
                 <option value="mainnet">mainnet</option>
               </select>
             </Field>
-            <Field label={selectedCredential ? "Replace Secret" : "API Key"}>
-              {selectedCredential && !replaceSecrets ? (
+            <Field label={selectedCredentialIsEnv ? "API Key" : selectedCredential ? "Replace Secret" : "API Key"}>
+              {selectedCredential && !replaceSecrets && !selectedCredentialIsEnv ? (
                 <button type="button" disabled={busy} onClick={() => setReplaceSecrets(true)}>
                   REPLACE STORED SECRET
                 </button>
@@ -457,7 +458,7 @@ export function LiveAccessPanel() {
                 <input
                   aria-label="Live API Key"
                   value={draft.api_key}
-                  disabled={busy}
+                  disabled={busy || selectedCredentialIsEnv}
                   autoComplete="off"
                   onChange={(event) => setDraft((current) => ({ ...current, api_key: event.target.value }))}
                 />
@@ -467,7 +468,7 @@ export function LiveAccessPanel() {
               <input
                 aria-label="Live API Secret"
                 value={draft.api_secret}
-                disabled={busy || (selectedCredential !== null && !replaceSecrets)}
+                disabled={busy || selectedCredentialIsEnv || (selectedCredential !== null && !replaceSecrets)}
                 type="password"
                 autoComplete="off"
                 onChange={(event) => setDraft((current) => ({ ...current, api_secret: event.target.value }))}
@@ -520,6 +521,7 @@ export function LiveAccessPanel() {
               type="button"
               disabled={
                 busy ||
+                selectedCredentialIsEnv ||
                 !draft.alias ||
                 (!selectedCredential && (!draft.api_key || !draft.api_secret)) ||
                 (selectedCredential !== null && replaceSecrets && (!draft.api_key || !draft.api_secret))
@@ -534,7 +536,7 @@ export function LiveAccessPanel() {
             <button type="button" disabled={busy || !selectedId} onClick={() => validateMutation.mutate()}>
               Validate
             </button>
-            <button type="button" disabled={busy || !selectedId} onClick={() => deleteMutation.mutate()}>
+            <button type="button" disabled={busy || !selectedId || selectedCredentialIsEnv} onClick={() => deleteMutation.mutate()}>
               Delete
             </button>
           </div>
@@ -684,6 +686,12 @@ function mergeLiveOrder(setLiveStatus: (status: LiveStatusSnapshot) => void, ord
   });
 }
 
+function credentialLabel(credential: LiveCredentialSummary): string {
+  const sourceLabel =
+    credential.source === "env" ? `ENV ${credential.environment.toUpperCase()}` : credential.environment;
+  return `${sourceLabel} · ${credential.alias} · ${credential.api_key_hint}`;
+}
+
 function StatusLists({
   status,
   activeCredential
@@ -720,7 +728,7 @@ function StatusLists({
           <strong>ACTIVE CREDENTIAL</strong>
           <span>
             {activeCredential
-              ? `${activeCredential.alias} · ${activeCredential.api_key_hint} · ${activeCredential.validation_status}`
+              ? `${credentialLabel(activeCredential)} · ${activeCredential.validation_status}`
               : "NONE"}
           </span>
           <span>last validated {formatTime(activeCredential?.last_validated_at ?? null)}</span>
@@ -812,6 +820,11 @@ function StatusLists({
           <strong>INTENT PREVIEW</strong>
           <span>{intentSummary(preview)}</span>
           <span>{preview ? preview.message : "Build preview before preflight."}</span>
+        </div>
+        <div className="list-item">
+          <strong>REFERENCE PRICE</strong>
+          <span>{referencePriceSummary(preview)}</span>
+          <span>{marketabilitySummary(preview)}</span>
         </div>
         <div className="list-item">
           <strong>LAST PREFLIGHT</strong>
@@ -986,6 +999,32 @@ function intentSummary(preview: LiveOrderPreview | null): string {
   const executionScope =
     intent.environment === "mainnet" ? "MAINNET CANARY GATED" : "TESTNET EXECUTION GATED";
   return `${intent.side} ${intent.order_type} ${intent.symbol} qty ${intent.quantity}${price} · ${executionScope} · ${intent.can_preflight ? "CAN PREFLIGHT" : "PREFLIGHT BLOCKED"} · ${intent.can_execute_now ? "CAN EXECUTE IF GATES PASS" : "EXECUTION BLOCKED"}${notes}`;
+}
+
+function referencePriceSummary(preview: LiveOrderPreview | null): string {
+  const reference = preview?.reference_price;
+  if (!reference) {
+    return "NOT RESOLVED";
+  }
+  if (!reference.price) {
+    return `UNAVAILABLE · ${reference.failure_reason ?? reference.blocking_reason ?? "reason unavailable"}`;
+  }
+  const stale = reference.stale ? "STALE" : "FRESH";
+  return `${reference.price} · ${reference.source ?? "unknown source"} · ${stale} · age ${reference.age_ms ?? "n/a"}ms`;
+}
+
+function marketabilitySummary(preview: LiveOrderPreview | null): string {
+  const check = preview?.marketability_check;
+  if (!check) {
+    return "No marketability check recorded.";
+  }
+  const result =
+    check.marketable_after_rounding === true
+      ? "MARKETABLE"
+      : check.marketable_after_rounding === false
+        ? "NON-MARKETABLE"
+        : "UNKNOWN";
+  return `${result} · rounded ${check.rounded_order_price ?? "n/a"} vs reference ${check.reference_price ?? "n/a"}`;
 }
 
 function preflightSummary(result: LiveOrderPreflightResult | null): string {

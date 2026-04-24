@@ -6,13 +6,13 @@ This runbook defines the bounded TESTNET soak drill for RelXen live execution. I
 
 MAINNET canary must remain disabled during this drill.
 
-The latest real evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
+The latest real TESTNET execution evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`. Env-backed credential validation evidence is `artifacts/testnet-soak/20260424T061338Z-env-credential-validation/`.
 
 ## Preconditions
 
 - Paper Mode V1 is runnable.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` or unset.
-- A Binance USD-M Futures TESTNET credential exists in the RelXen secure-store flow.
+- A Binance USD-M Futures TESTNET credential exists in the RelXen secure-store flow or as an enabled env-backed `env-testnet` summary.
 - The active credential environment is `testnet`.
 - Active symbol is `BTCUSDT` or `BTCUSDC`.
 - Account mode checks report one-way mode and single-asset mode.
@@ -237,7 +237,7 @@ The export script writes:
 - `logs.json`
 - optional guided `checkpoints/` snapshots
 
-`credentials.json` contains masked credential summaries only. It must never contain raw API keys or secrets.
+`credentials.json` contains masked credential summaries and source metadata only. It must never contain raw API keys or secrets.
 
 Artifacts must distinguish:
 
@@ -264,4 +264,4 @@ Update `docs/LATEST_TESTNET_SOAK_REPORT.md` with:
 - current mainnet canary go/no-go recommendation
 - evidence bundle path
 
-Current status: the real bundle at `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` supports a bounded CONDITIONAL GO for one manual MAINNET canary session later. MAINNET remains default-off until that session is intentionally enabled and separately evidenced.
+Current status: real TESTNET evidence exists, env-backed TESTNET validation evidence exists, and the latest MAINNET canary evidence at `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/` submitted and canceled one guarded non-marketable `BTCUSDT` `LIMIT` canary with no fill and restart repair passed. MAINNET remains default-off outside explicitly enabled canary sessions, and MAINNET auto remains blocked.

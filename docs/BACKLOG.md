@@ -19,6 +19,7 @@
 ## Completed Live-Foundation Items
 
 - OS secure-storage abstraction with normal runtime backend and in-memory test backend.
+- Env-backed local credential source with masked source metadata, authoritative TESTNET env startup selection, compatibility-alias fallback behavior, and explicit MAINNET selection requirement.
 - Masked live credential metadata CRUD with active credential selection.
 - SQLite live metadata persistence without raw secret storage.
 - Binance USDⓈ-M Futures signed read-only credential validation.
@@ -64,19 +65,29 @@
 - Real TESTNET readiness/shadow bootstrap, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and auto duplicate-suppression evidence.
 - Real evidence bundle generated under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
 - Evidence export now includes masked credential summaries to make credential blockers auditable without exposing secrets.
+- Evidence export includes credential source metadata and can write the required masked MAINNET canary before/after snapshots.
 - Bounded TESTNET soak runbook covering credential readiness, shadow sync, preview, preflight, real TESTNET execution, cancel, flatten, kill switch, restart repair, reconnect repair, auto-executor proof, and recent-window repair limits.
 - Secret-safe evidence export script using existing read-only API endpoints.
 - Guided operator soak wrapper with checkpoint capture and no built-in order placement.
 - Mainnet canary checklist with explicit hard preconditions and no-go conditions.
-- Latest soak report updated with real exchange evidence, targeted fixes, and a conditional-go recommendation.
+- Latest soak report updated with real exchange evidence, targeted fixes, env validation evidence, and the current MAINNET NO-GO recommendation.
 - TESTNET-only, default-off drill helper for replaying the latest persisted closed signal through the existing auto executor when no natural signal appears during a bounded soak window.
 - Manual shadow refresh now performs bounded recent-window execution repair.
 - Recent-window repaired fills now backfill local order references when authoritative exchange trade data can be matched to a repaired order.
 - Git ignore policy for generated soak artifacts under `artifacts/testnet-soak/`.
+- Env-backed TESTNET and MAINNET credential validation without raw-secret persistence or secure-store prompts.
+- MAINNET canary retry NO-GO evidence bundle under `artifacts/mainnet-canary/20260424T070419Z-balance-blocked/`.
+- MAINNET leverage-gated canary retry NO-GO evidence bundle under `artifacts/mainnet-canary/20260424T073409Z-leverage-gated/`.
+- MAINNET balance-funded canary retry NO-GO evidence bundle under `artifacts/mainnet-canary/20260424T083256Z-balance-funded/`.
+- MAINNET leverage-fixed canary retry NO-GO evidence bundle under `artifacts/mainnet-canary/20260424T084721Z-leverage-fixed/`.
+- MAINNET leverage-fixed canary retry NO-GO evidence bundle under `artifacts/mainnet-canary/20260424T085756Z-leverage-fixed/` after reference price became unavailable post kill-switch drill.
+- Reference-price freshness hardening with explicit internal-market/REST mark-price resolver, preview diagnostics, and final submit refresh enforcement.
+- Successful guarded MAINNET canary evidence bundle under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`: one `BTCUSDT` non-marketable `LIMIT` order submitted, canceled, reconciled flat, restart-repair checked, and canary flag disabled afterward.
+- Shadow/reconciliation environment mismatch now blocks readiness, preview, and execution gates.
 
 ## Immediate Next Task
 
-Run one single-order manual MAINNET canary session with the existing gates and capture a matching evidence bundle plus report update.
+Review `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/` and choose the next bounded mainnet-readiness task. Do not enable MAINNET auto-execution or broader mainnet operation without a separate design batch.
 
 ## Deferred Live Execution Work
 

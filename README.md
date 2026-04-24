@@ -1,21 +1,21 @@
 # RelXen
 
-RelXen is a clean-room ASO-based Binance Futures trading dashboard. It is a local single-user app with a Rust backend, SQLite persistence, OS secure-storage-backed live credential metadata, live shadow/preflight foundations, a constrained Binance USDⓈ-M Futures executor, and a lightweight React dashboard served statically by the backend.
+RelXen is a clean-room ASO-based Binance Futures trading dashboard. It is a local single-user app with a Rust backend, SQLite persistence, masked live credential metadata, live shadow/preflight foundations, a constrained Binance USDⓈ-M Futures executor, and a lightweight React dashboard served statically by the backend.
 
-Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23 and the current recommendation is CONDITIONAL GO for one bounded manual MAINNET canary session later. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
+Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, optional local `.env` credential loading, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` non-marketable `LIMIT` canary submitted, canceled, reconciled, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
 
 ## V1 Scope
 
 - Paper trading remains supported and isolated from live exchange truth.
 - TESTNET live execution is implemented for explicit operator-submitted `MARKET` / `LIMIT` orders, cancel, cancel-all-active-symbol, flatten, and opt-in closed-candle auto-execution.
-- MAINNET manual canary execution uses the same ACK-plus-authoritative-reconciliation path, but it is disabled by default and requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, validated mainnet credentials, a configured risk profile, fresh shadow/rules/account state, arming, and exact operator confirmation.
+- MAINNET manual canary execution uses the same ACK-plus-authoritative-reconciliation path, but it is disabled by default and requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, explicitly selected and validated mainnet credentials, a configured risk profile, fresh shadow/rules/account state, arming, a non-marketable `LIMIT` preview, and exact operator confirmation.
 - Supported symbols are `BTCUSDT` and `BTCUSDC`.
 - Exactly one active symbol and one open position are supported at a time.
 - Market data comes from Binance Futures REST klines and WebSocket klines.
 - Historical loading uses explicit `startTime` / `endTime` ranged REST requests.
 - Signals are generated only from closed candles using the Average Sentiment Oscillator.
 - Runtime recovery reconciles bounded REST ranges after reconnects and emits `resync_required` when deterministic continuity cannot be proven.
-- Live credentials use an OS secure-storage abstraction; SQLite stores masked metadata only.
+- Live credentials use an OS secure-storage abstraction by default; local `.env` credentials can be enabled for operator convenience. SQLite stores masked metadata and source only.
 - Live readiness can validate credentials, fetch read-only account snapshots and symbol rules, check dedicated position-mode and multi-assets-mode endpoints, arm live mode, start/stop shadow sync, build `MARKET` / `LIMIT` intent previews, run testnet preflight checks, submit confirmed TESTNET or gated MAINNET canary orders, cancel confirmed orders, flatten an active-symbol position when reconciliation is coherent, engage/release the kill switch, and start/stop TESTNET auto-execution.
 
 ## Workspace Layout
@@ -32,6 +32,7 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 - Local runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Testnet soak drill: [docs/TESTNET_SOAK_RUNBOOK.md](docs/TESTNET_SOAK_RUNBOOK.md)
 - Latest soak report: [docs/LATEST_TESTNET_SOAK_REPORT.md](docs/LATEST_TESTNET_SOAK_REPORT.md)
+- Latest mainnet canary report: [docs/LATEST_MAINNET_CANARY_REPORT.md](docs/LATEST_MAINNET_CANARY_REPORT.md)
 - Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Current project memory: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)
 - Post-v1 live readiness entrypoint: [docs/LIVE_READINESS.md](docs/LIVE_READINESS.md)
@@ -44,14 +45,15 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 - [Live Risk Controls](docs/LIVE_RISK_CONTROLS.md)
 - [Live Implementation Plan](docs/LIVE_IMPLEMENTATION_PLAN.md)
 - [Mainnet Canary Checklist](docs/MAINNET_CANARY_CHECKLIST.md)
+- [Latest Mainnet Canary Report](docs/LATEST_MAINNET_CANARY_REPORT.md)
 
 ## Live Access Status
 
 The dashboard includes a `LIVE ACCESS` panel. It supports masked credential metadata CRUD, active credential selection, Binance USDⓈ-M Futures read-only validation, readiness refresh, arm/disarm controls, live shadow stream controls, kill switch controls, risk-profile configuration, TESTNET auto start/stop, intent preview, testnet preflight, explicit TESTNET order execution, gated MAINNET canary execution, cancel, cancel-all-active-symbol, and flatten. Supported execution symbols remain `BTCUSDT` and `BTCUSDC`; supported actual order types are `MARKET` and `LIMIT`.
 
-Raw API secrets are never returned by HTTP APIs and are not stored in SQLite. Normal runtime uses OS secure storage through the infra secret-store adapter; tests use in-memory stores. If the OS secure store is unavailable, paper mode remains usable and live readiness fails closed.
+Raw API secrets are never returned by HTTP APIs and are not stored in SQLite. Normal production-minded runtime uses OS secure storage through the infra secret-store adapter; tests use in-memory stores. Local operators may opt into `.env` credentials with `RELXEN_CREDENTIAL_SOURCE=env`; in that authoritative mode the TESTNET env credential is selected at startup ahead of any persisted secure-store TESTNET selection, while MAINNET env credentials still require explicit selection. `.env` is gitignored, placeholder-only values belong in `.env.example`, and OS secure storage remains the preferred production-grade secret path. If the configured secret source is unavailable or incomplete, paper mode remains usable and live readiness fails closed.
 
-Preflight success is reported as `PREFLIGHT PASSED`, never as an order placement. Actual placement requires a separate execute action, explicit confirmation, validated credentials, fresh shadow state, fresh rules/account snapshots, dedicated one-way and single-asset-mode checks, supported symbol/timeframe, a configured risk profile for MAINNET canary, and a non-stale preview. Real submissions request Binance `ACK` and rely on user-data stream plus bounded recent-window REST repair for final order/fill/account truth.
+Preflight success is reported as `PREFLIGHT PASSED`, never as an order placement. Actual placement requires a separate execute action, explicit confirmation, validated credentials, fresh shadow state, fresh rules/account snapshots, dedicated one-way and single-asset-mode checks, supported symbol/timeframe, a configured risk profile for MAINNET canary, and a non-stale preview. MAINNET canary previews must be non-marketable `LIMIT` orders after tick-size rounding; `MARKET` is blocked for the first canary. Real submissions request Binance `ACK` and rely on user-data stream plus bounded recent-window REST repair for final order/fill/account truth.
 
 ## Testnet Soak Evidence
 
@@ -96,12 +98,15 @@ Defaults are documented in `.env.example`.
 - `RELXEN_FRONTEND_DIST`: built frontend directory, default `web/dist`.
 - `RELXEN_LOG_LEVEL`: tracing filter, default `info,relxen=debug`.
 - `RELXEN_AUTO_START`: start the market stream after bootstrap, default `true`.
+- `RELXEN_CREDENTIAL_SOURCE`: set to `env` to load local operator credentials from `.env`. This setting is authoritative.
+- `RELXEN_ENABLE_ENV_CREDENTIALS`: compatibility alias; `true` enables env credentials only when `RELXEN_CREDENTIAL_SOURCE` is unset.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables manual MAINNET canary submission path when every other gate passes, default `false`.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for bounded soak validation, default `false`.
+- `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: optional env credential values when env source is enabled. `.env.example` contains placeholders only; never commit `.env`.
 
 SQLite migrations run automatically when the repository connects. The app enables WAL mode, `synchronous = normal`, and a busy timeout.
 
-The live credential path stores only metadata in SQLite. Raw live secrets are stored behind the OS secure-storage adapter for normal runtime and are never echoed to the frontend.
+The live credential path stores only metadata in SQLite. Raw secure-store secrets live behind the OS secure-storage adapter, and raw env secrets are read from process environment only when explicitly enabled. Neither path echoes raw secrets to the frontend.
 
 Live shadow state and preflight results are cached in SQLite as operator-visible snapshots. They are not exchange-authoritative execution records and do not imply an order was placed.
 

@@ -11,4 +11,7 @@ pub use ports::{
     MarketStream, MarketStreamEvent, MetricsPort, NoopPublisher, Repository, SecretStore,
     UnavailableLiveExchange, UnavailableSecretStore,
 };
-pub use service::{now_ms, AppService, LiveDependencies, ServiceOptions};
+pub use service::{
+    env_credential_id, now_ms, AppService, EnvCredentialConfig, EnvCredentialPair,
+    LiveDependencies, ServiceOptions,
+};

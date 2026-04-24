@@ -8,6 +8,8 @@ Date: 2026-04-23
 
 Evidence bundle: `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`
 
+Env credential validation addendum: `artifacts/testnet-soak/20260424T061338Z-env-credential-validation/`
+
 Active credential summary during the run:
 
 - alias: `codex-testnet-20260423`
@@ -15,6 +17,8 @@ Active credential summary during the run:
 - api key hint: `jl9F…drYl`
 
 MAINNET remained disabled throughout the run: `/api/live/status.mainnet_canary.enabled_by_server=false`.
+
+On 2026-04-24, env-backed TESTNET credentials were loaded from local `.env`, selected as `env-testnet` without secure-store prompts, validated successfully, refreshed through readiness/shadow, and exported with masked credential metadata only.
 
 ## What Was Exercised For Real
 
@@ -89,18 +93,21 @@ MAINNET remained disabled throughout the run: `/api/live/status.mainnet_canary.e
 
 ## Current Mainnet Canary Recommendation
 
-CONDITIONAL GO for one bounded manual MAINNET canary session later.
+GO for the bounded manual MAINNET canary path that was exercised on 2026-04-24. Broader mainnet operation and MAINNET auto remain out of scope.
 
 Rationale:
 
 - Real TESTNET evidence now exists for credential validation, readiness, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and duplicate-safe auto submission.
+- Env-backed TESTNET credential validation now exists without OS secure-storage prompts.
+- A guarded MAINNET canary retry on 2026-04-24 hardened reference-price freshness, forced a fresh REST mark-price-backed final preview after the kill-switch drill, submitted one non-marketable `BTCUSDT` `LIMIT` canary, canceled it, reconciled flat with no fill, passed restart repair, and disabled the canary flag afterward. Evidence: `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 - Mainnet remains default-off and no hidden bypass was used.
-- The remaining gap is operational, not architectural: the auto proof in this soak used the explicit TESTNET-only drill helper because no natural bounded-window crossover appeared.
+- MAINNET auto remains blocked.
 
 ## Exact Preconditions For Safe Manual MAINNET Canary
 
 - Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` until the canary session starts.
-- Use a validated mainnet credential stored through the secure-store flow.
+- Use a validated mainnet credential from OS secure storage or the env-backed `env-mainnet` summary.
+- Confirm mainnet available quote balance is sufficient for the smallest exchange-compliant non-marketable `LIMIT` preview, exchange min quantity does not force notional above the approved canary cap, active-symbol exchange leverage is no greater than the approved maximum, and the preview remains fresh after kill-switch release.
 - Configure and review a conservative risk profile before arming.
 - Start fresh shadow sync and verify one-way mode plus single-asset mode.
 - Confirm the active symbol is `BTCUSDT` or `BTCUSDC`.

@@ -10,4 +10,4 @@ pub use db::SqliteRepository;
 pub use event_bus::EventBus;
 pub use live_binance::BinanceLiveReadOnly;
 pub use metrics::SystemMetricsCollector;
-pub use secrets::{MemorySecretStore, OsSecretStore};
+pub use secrets::{EnvOverlaySecretStore, MemorySecretStore, OsSecretStore};

@@ -3,7 +3,12 @@ set -euo pipefail
 
 BASE_URL="${RELXEN_BASE_URL:-http://localhost:3000}"
 STAMP="${RELXEN_SOAK_TIMESTAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
-OUT_DIR="${RELXEN_SOAK_ARTIFACT_DIR:-artifacts/testnet-soak/$STAMP}"
+EVIDENCE_KIND="${RELXEN_EVIDENCE_KIND:-testnet-soak}"
+DEFAULT_OUT_DIR="artifacts/testnet-soak/$STAMP"
+if [[ "$EVIDENCE_KIND" == "mainnet-canary" ]]; then
+  DEFAULT_OUT_DIR="artifacts/mainnet-canary/$STAMP"
+fi
+OUT_DIR="${RELXEN_SOAK_ARTIFACT_DIR:-$DEFAULT_OUT_DIR}"
 LABEL="${RELXEN_SOAK_LABEL:-manual-export}"
 
 require_tool() {
@@ -49,11 +54,35 @@ if [[ ! -f "$OUT_DIR/live_status_before.json" ]]; then
   cp "$OUT_DIR/live_status_after.json" "$OUT_DIR/live_status_before.json"
 fi
 write_json "/api/live/credentials" "$OUT_DIR/credentials.json"
+cp "$OUT_DIR/credentials.json" "$OUT_DIR/credentials_masked.json"
 write_json "/api/bootstrap" "$OUT_DIR/bootstrap_snapshot.json"
+if [[ ! -f "$OUT_DIR/bootstrap_snapshot_before.json" ]]; then
+  cp "$OUT_DIR/bootstrap_snapshot.json" "$OUT_DIR/bootstrap_snapshot_before.json"
+fi
+cp "$OUT_DIR/bootstrap_snapshot.json" "$OUT_DIR/bootstrap_snapshot_after.json"
 write_json "/api/live/orders?limit=100" "$OUT_DIR/orders.json"
 write_json "/api/live/fills?limit=100" "$OUT_DIR/fills.json"
 write_json "/api/live/preflights?limit=100" "$OUT_DIR/preflights.json"
 write_json "/api/logs?limit=300" "$OUT_DIR/logs.json"
+
+jq '.account_snapshot' "$OUT_DIR/live_status_after.json" >"$OUT_DIR/account_snapshot_after.json"
+if [[ ! -f "$OUT_DIR/account_snapshot_before.json" ]]; then
+  cp "$OUT_DIR/account_snapshot_after.json" "$OUT_DIR/account_snapshot_before.json"
+fi
+jq '.reconciliation.shadow.positions // []' "$OUT_DIR/live_status_after.json" >"$OUT_DIR/position_snapshot_after.json"
+if [[ ! -f "$OUT_DIR/position_snapshot_before.json" ]]; then
+  cp "$OUT_DIR/position_snapshot_after.json" "$OUT_DIR/position_snapshot_before.json"
+fi
+jq '[.[]? | select(.status == "accepted" or .status == "working" or .status == "partially_filled" or .status == "submit_pending" or .status == "cancel_pending")]' \
+  "$OUT_DIR/orders.json" >"$OUT_DIR/open_orders_after.json"
+if [[ ! -f "$OUT_DIR/open_orders_before.json" ]]; then
+  cp "$OUT_DIR/open_orders_after.json" "$OUT_DIR/open_orders_before.json"
+fi
+jq '.risk_profile' "$OUT_DIR/live_status_after.json" >"$OUT_DIR/risk_profile.json"
+jq '{
+  reference_price: .intent_preview.reference_price,
+  marketability_check: .intent_preview.marketability_check
+}' "$OUT_DIR/live_status_after.json" >"$OUT_DIR/reference_price.json"
 
 jq '{
   readiness: .readiness.blocking_reasons,
@@ -69,6 +98,18 @@ jq '[.[]? | select(
   ((.target // "") | test("live|runtime|relxen"; "i"))
 )]' "$OUT_DIR/logs.json" >"$OUT_DIR/repair_events.json"
 
+jq '[.[]? | select(((.message // "") | test("kill switch|kill-switch|kill_switch"; "i")))]' \
+  "$OUT_DIR/logs.json" >"$OUT_DIR/kill_switch_events.json"
+
+if [[ ! -f "$OUT_DIR/final_verdict.json" ]]; then
+  jq -n --arg generated_at "$generated_at" --arg label "$LABEL" '{
+    generated_at: $generated_at,
+    label: $label,
+    verdict: "pending_operator_review",
+    raw_secret_policy: "No raw secrets are exported."
+  }' >"$OUT_DIR/final_verdict.json"
+fi
+
 append_timeline "orders" "$OUT_DIR/orders.json"
 append_timeline "fills" "$OUT_DIR/fills.json"
 append_timeline "preflights" "$OUT_DIR/preflights.json"
@@ -78,10 +119,12 @@ jq -n \
   --arg generated_at "$generated_at" \
   --arg base_url "$BASE_URL" \
   --arg label "$LABEL" \
+  --arg evidence_kind "$EVIDENCE_KIND" \
   '{
     generated_at: $generated_at,
     label: $label,
     base_url: $base_url,
+    evidence_kind: $evidence_kind,
     secret_policy: "No raw secrets are exported. RelXen live APIs expose masked credential metadata only.",
     files: [
       "manifest.json",
@@ -90,12 +133,25 @@ jq -n \
       "live_status_before.json",
       "live_status_after.json",
       "credentials.json",
+      "credentials_masked.json",
       "bootstrap_snapshot.json",
+      "bootstrap_snapshot_before.json",
+      "bootstrap_snapshot_after.json",
+      "account_snapshot_before.json",
+      "account_snapshot_after.json",
+      "position_snapshot_before.json",
+      "position_snapshot_after.json",
+      "open_orders_before.json",
+      "open_orders_after.json",
       "orders.json",
       "fills.json",
       "preflights.json",
       "blocking_reasons.json",
       "repair_events.json",
+      "kill_switch_events.json",
+      "risk_profile.json",
+      "reference_price.json",
+      "final_verdict.json",
       "logs.json"
     ]
   }' >"$OUT_DIR/manifest.json"
@@ -118,6 +174,7 @@ cat >"$OUT_DIR/session_summary.md" <<SUMMARY
 
 - Generated at: \`$generated_at\`
 - Label: \`$LABEL\`
+- Evidence kind: \`$EVIDENCE_KIND\`
 - Base URL: \`$BASE_URL\`
 - Live state: \`$state\`
 - Environment: \`$environment\`

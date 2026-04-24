@@ -1,9 +1,13 @@
 mod support;
 
-use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceOptions};
+use relxen_app::{
+    env_credential_id, AppMetadata, AppService, EnvCredentialConfig, EnvCredentialPair,
+    LiveDependencies, Repository, SecretStore, ServiceOptions,
+};
 use relxen_domain::{
-    AsoMode, CreateLiveCredentialRequest, LiveBlockingReason, LiveCredentialValidationStatus,
-    LiveEnvironment, LiveModePreference, LiveRuntimeState, SetLiveModePreferenceRequest, Settings,
+    AsoMode, CreateLiveCredentialRequest, LiveBlockingReason, LiveCredentialSecret,
+    LiveCredentialSource, LiveCredentialValidationStatus, LiveEnvironment, LiveModePreference,
+    LiveRuntimeState, SetLiveModePreferenceRequest, Settings,
 };
 
 use support::{
@@ -15,6 +19,25 @@ async fn initialized_service(
     repository: std::sync::Arc<MockRepository>,
     secret_store: std::sync::Arc<TestSecretStore>,
     exchange: std::sync::Arc<FakeLiveExchange>,
+) -> std::sync::Arc<AppService> {
+    initialized_service_with_options(
+        repository,
+        secret_store,
+        exchange,
+        ServiceOptions {
+            history_limit: 2,
+            auto_start: false,
+            ..ServiceOptions::default()
+        },
+    )
+    .await
+}
+
+async fn initialized_service_with_options(
+    repository: std::sync::Arc<MockRepository>,
+    secret_store: std::sync::Arc<TestSecretStore>,
+    exchange: std::sync::Arc<FakeLiveExchange>,
+    options: ServiceOptions,
 ) -> std::sync::Arc<AppService> {
     repository
         .save_settings(&Settings {
@@ -49,11 +72,7 @@ async fn initialized_service(
         LiveDependencies::new(secret_store, exchange),
         arc(StaticMetrics),
         arc(relxen_app::NoopPublisher),
-        ServiceOptions {
-            history_limit: 2,
-            auto_start: false,
-            ..ServiceOptions::default()
-        },
+        options,
     );
     service.initialize().await.unwrap();
     service
@@ -109,6 +128,179 @@ async fn live_credential_crud_masks_secret_and_persists_metadata_only() {
         .await
         .unwrap();
     assert!(service.list_live_credentials().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn env_testnet_credential_masks_and_auto_selects_without_mainnet_autoselect() {
+    let repository = arc(MockRepository::default());
+    let secret_store = arc(TestSecretStore::default());
+    secret_store
+        .store(
+            &env_credential_id(LiveEnvironment::Testnet),
+            &LiveCredentialSecret {
+                api_key: "envtest12345678".to_string(),
+                api_secret: "env-test-secret".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    secret_store
+        .store(
+            &env_credential_id(LiveEnvironment::Mainnet),
+            &LiveCredentialSecret {
+                api_key: "envmain12345678".to_string(),
+                api_secret: "env-main-secret".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let service = initialized_service_with_options(
+        repository.clone(),
+        secret_store,
+        arc(FakeLiveExchange::default()),
+        ServiceOptions {
+            history_limit: 2,
+            auto_start: false,
+            env_credentials: EnvCredentialConfig {
+                enabled: true,
+                authoritative: false,
+                testnet: EnvCredentialPair {
+                    api_key: Some("envtest12345678".to_string()),
+                    api_secret: Some("env-test-secret".to_string()),
+                },
+                mainnet: EnvCredentialPair {
+                    api_key: Some("envmain12345678".to_string()),
+                    api_secret: Some("env-main-secret".to_string()),
+                },
+            },
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+
+    let credentials = service.list_live_credentials().await.unwrap();
+    let testnet = credentials
+        .iter()
+        .find(|credential| credential.id == env_credential_id(LiveEnvironment::Testnet))
+        .unwrap();
+    assert_eq!(testnet.source, LiveCredentialSource::Env);
+    assert_eq!(testnet.api_key_hint, "envt…5678");
+    assert!(testnet.is_active);
+
+    let mainnet = credentials
+        .iter()
+        .find(|credential| credential.id == env_credential_id(LiveEnvironment::Mainnet))
+        .unwrap();
+    assert_eq!(mainnet.source, LiveCredentialSource::Env);
+    assert!(!mainnet.is_active);
+    assert!(repository
+        .active_live_credential(LiveEnvironment::Mainnet)
+        .await
+        .unwrap()
+        .is_none());
+
+    let validation = service
+        .validate_live_credential(env_credential_id(LiveEnvironment::Testnet))
+        .await
+        .unwrap();
+    assert_eq!(validation.status, LiveCredentialValidationStatus::Valid);
+}
+
+#[tokio::test]
+async fn authoritative_env_source_replaces_persisted_secure_store_testnet_active() {
+    let repository = arc(MockRepository::default());
+    let secret_store = arc(TestSecretStore::default());
+    let exchange = arc(FakeLiveExchange::default());
+
+    let service =
+        initialized_service(repository.clone(), secret_store.clone(), exchange.clone()).await;
+    let secure_store_credential = service
+        .create_live_credential(create_request())
+        .await
+        .unwrap();
+    let validation = service
+        .validate_live_credential(secure_store_credential.id)
+        .await
+        .unwrap();
+    assert_eq!(validation.status, LiveCredentialValidationStatus::Valid);
+
+    secret_store
+        .store(
+            &env_credential_id(LiveEnvironment::Testnet),
+            &LiveCredentialSecret {
+                api_key: "envtest12345678".to_string(),
+                api_secret: "env-test-secret".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let service = initialized_service_with_options(
+        repository.clone(),
+        secret_store,
+        exchange,
+        ServiceOptions {
+            history_limit: 2,
+            auto_start: false,
+            env_credentials: EnvCredentialConfig {
+                enabled: true,
+                authoritative: true,
+                testnet: EnvCredentialPair {
+                    api_key: Some("envtest12345678".to_string()),
+                    api_secret: Some("env-test-secret".to_string()),
+                },
+                mainnet: EnvCredentialPair::default(),
+            },
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+
+    let active = repository
+        .active_live_credential(LiveEnvironment::Testnet)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.id, env_credential_id(LiveEnvironment::Testnet));
+    assert_eq!(active.source, LiveCredentialSource::Env);
+    let status = service.live_status().await.unwrap();
+    assert_eq!(
+        status.active_credential.unwrap().id,
+        env_credential_id(LiveEnvironment::Testnet)
+    );
+}
+
+#[tokio::test]
+async fn partial_env_credentials_block_without_persisting_metadata() {
+    let repository = arc(MockRepository::default());
+    let service = initialized_service_with_options(
+        repository,
+        arc(TestSecretStore::default()),
+        arc(FakeLiveExchange::default()),
+        ServiceOptions {
+            history_limit: 2,
+            auto_start: false,
+            env_credentials: EnvCredentialConfig {
+                enabled: true,
+                authoritative: false,
+                testnet: EnvCredentialPair {
+                    api_key: Some("envtest12345678".to_string()),
+                    api_secret: None,
+                },
+                mainnet: EnvCredentialPair::default(),
+            },
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+
+    assert!(service.list_live_credentials().await.unwrap().is_empty());
+    let status = service.live_status().await.unwrap();
+    assert!(status
+        .readiness
+        .blocking_reasons
+        .contains(&LiveBlockingReason::EnvCredentialPartial));
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ This document defines live-mode boundaries in terms of the current RelXen archit
 
 ## New Boundaries Required For Live Mode
 
-- Credential provider: implemented as the secret-store abstraction; normal runtime uses OS secure storage only.
+- Credential provider: implemented as the secret-store abstraction; normal production-minded runtime uses OS secure storage, and explicit local env loading is available with `RELXEN_CREDENTIAL_SOURCE=env`.
 - Credential validation service: implemented for signed read-only Binance USDⓈ-M Futures account checks.
 - Exchange symbol-rules provider: implemented for the active supported symbols and the core filters needed by future execution.
 - Account snapshot provider: implemented for read-only balances and positions.
@@ -81,14 +81,16 @@ No live order may be placed when:
 - Symbol or timeframe is unsupported.
 - Exchange symbol rules are missing, stale, or inconsistent.
 - Account snapshot is missing or ambiguous.
+- Shadow stream/account environment does not match the active live environment.
 - An open live position exists that cannot be reconciled to the current strategy state.
 - Market data is stale or `resync_required` is active.
 - Environment is MAINNET and the canary server flag is disabled.
 - Environment is MAINNET and the operator risk profile is missing.
 - Environment is MAINNET and exact canary confirmation text is missing or mismatched.
+- Environment is MAINNET and the preview is not a non-marketable `LIMIT` after tick-size rounding, or the reference price is missing/stale.
 - The displayed preview is missing, stale, or mismatched from the submitted intent id/hash.
 - Clock drift or request timestamp confidence is outside the configured tolerance.
-- The order intent fails precision, sizing, notional, leverage, reduce-only, or risk checks.
+- The order intent fails precision, sizing, notional, leverage, reduce-only, available-balance, or risk checks.
 - The kill switch is engaged.
 - Reconciliation failed after a prior order.
 - Account mode checks report hedge mode or multi-assets mode.

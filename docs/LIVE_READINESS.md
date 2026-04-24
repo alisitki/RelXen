@@ -8,12 +8,14 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 
 - Paper Mode V1 is release-candidate complete.
 - Paper mode remains complete and isolated.
-- Live foundations are implemented for credential metadata, OS secure storage, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
+- Live foundations are implemented for credential metadata, OS secure storage, explicit local env credential loading, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
 - MAINNET execution is disabled by default and MAINNET auto-execution is not implemented.
 - A real TESTNET soak was completed on 2026-04-23 and captured under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
+- Env-backed credential validation evidence was captured on 2026-04-24 under `artifacts/testnet-soak/20260424T061338Z-env-credential-validation/`.
+- A 2026-04-24 MAINNET canary retry after reference-price hardening submitted exactly one guarded `BTCUSDT` non-marketable `LIMIT` order, canceled it, reconciled flat with no fills, passed restart repair, and disabled the canary flag afterward; evidence is under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 - The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation or explicit TESTNET auto start, with fail-closed gates.
-- The repository can place a MAINNET canary `MARKET` / `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, and all execution/reconciliation gates pass.
-- The repository stores live credential metadata in SQLite and raw secrets through the OS secure-storage abstraction only.
+- The repository can place a MAINNET canary `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, the rounded price is non-marketable, and all execution/reconciliation gates pass. `MARKET` is blocked for the first MAINNET canary.
+- The repository stores live credential metadata and source in SQLite. Raw secure-store secrets stay in OS secure storage; raw env secrets stay process-only when `RELXEN_CREDENTIAL_SOURCE=env` is explicitly enabled. In authoritative env-source mode, TESTNET env credentials take precedence at startup over persisted secure-store TESTNET active selections; MAINNET env credentials still require explicit selection.
 
 ## Design Documents
 
@@ -26,6 +28,7 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - [Testnet Soak Runbook](./TESTNET_SOAK_RUNBOOK.md)
 - [Latest Testnet Soak Report](./LATEST_TESTNET_SOAK_REPORT.md)
 - [Mainnet Canary Checklist](./MAINNET_CANARY_CHECKLIST.md)
+- [Latest Mainnet Canary Report](./LATEST_MAINNET_CANARY_REPORT.md)
 - [Architecture](./ARCHITECTURE.md)
 - [Runbook](./RUNBOOK.md)
 
@@ -81,4 +84,4 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 
 ## Design Rule
 
-Future live implementation must proceed in small slices. The next implementation task is one bounded manual MAINNET canary session using the existing gates, with a matching evidence bundle and report update, while keeping MAINNET auto-execution disabled.
+Future live implementation must proceed in small slices. The latest bounded manual MAINNET canary passed through the existing gates, but MAINNET auto-execution and broader mainnet operation remain out of scope until a separate design batch explicitly changes that boundary.

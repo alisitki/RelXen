@@ -326,11 +326,40 @@ impl FromStr for LiveCredentialValidationStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveCredentialSource {
+    SecureStore,
+    Env,
+}
+
+impl LiveCredentialSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SecureStore => "secure_store",
+            Self::Env => "env",
+        }
+    }
+}
+
+impl FromStr for LiveCredentialSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "secure_store" => Ok(Self::SecureStore),
+            "env" => Ok(Self::Env),
+            _ => Err(format!("unsupported credential source: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveCredentialSummary {
     pub id: LiveCredentialId,
     pub alias: String,
     pub environment: LiveEnvironment,
+    pub source: LiveCredentialSource,
     pub api_key_hint: String,
     pub validation_status: LiveCredentialValidationStatus,
     pub last_validated_at: Option<i64>,
@@ -395,6 +424,8 @@ pub enum LiveRuntimeState {
 #[serde(rename_all = "snake_case")]
 pub enum LiveBlockingReason {
     NoActiveCredential,
+    EnvCredentialsMissing,
+    EnvCredentialPartial,
     SecureStoreUnavailable,
     ValidationFailed,
     ValidationMissing,
@@ -416,8 +447,13 @@ pub enum LiveBlockingReason {
     MainnetExecutionBlocked,
     MainnetCanaryDisabled,
     MainnetCanaryRiskProfileMissing,
+    MainnetCanaryLimitRequired,
+    MainnetCanaryLimitMarketable,
     MainnetConfirmationMissing,
     MainnetAutoBlocked,
+    ReferencePriceUnavailable,
+    ReferencePriceStale,
+    ReferencePriceSourceFailed,
     StaleShadowState,
     PreviewMismatch,
     ExecutionStatusUnknown,
@@ -438,6 +474,8 @@ impl LiveBlockingReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NoActiveCredential => "no_active_credential",
+            Self::EnvCredentialsMissing => "env_credentials_missing",
+            Self::EnvCredentialPartial => "env_credential_partial",
             Self::SecureStoreUnavailable => "secure_store_unavailable",
             Self::ValidationFailed => "validation_failed",
             Self::ValidationMissing => "validation_missing",
@@ -459,8 +497,13 @@ impl LiveBlockingReason {
             Self::MainnetExecutionBlocked => "mainnet_execution_blocked",
             Self::MainnetCanaryDisabled => "mainnet_canary_disabled",
             Self::MainnetCanaryRiskProfileMissing => "mainnet_canary_risk_profile_missing",
+            Self::MainnetCanaryLimitRequired => "mainnet_canary_limit_required",
+            Self::MainnetCanaryLimitMarketable => "mainnet_canary_limit_marketable",
             Self::MainnetConfirmationMissing => "mainnet_confirmation_missing",
             Self::MainnetAutoBlocked => "mainnet_auto_blocked",
+            Self::ReferencePriceUnavailable => "reference_price_unavailable",
+            Self::ReferencePriceStale => "reference_price_stale",
+            Self::ReferencePriceSourceFailed => "reference_price_source_failed",
             Self::StaleShadowState => "stale_shadow_state",
             Self::PreviewMismatch => "preview_mismatch",
             Self::ExecutionStatusUnknown => "execution_status_unknown",
@@ -1079,6 +1122,30 @@ pub struct LiveExecutableIntent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveReferencePriceSnapshot {
+    pub environment: LiveEnvironment,
+    pub symbol: Symbol,
+    pub price: Option<String>,
+    pub source: Option<String>,
+    pub observed_at: Option<i64>,
+    pub fetched_at: Option<i64>,
+    pub age_ms: Option<i64>,
+    pub stale: bool,
+    pub failure_reason: Option<String>,
+    pub blocking_reason: Option<LiveBlockingReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveMarketabilityCheck {
+    pub reference_price: Option<String>,
+    pub reference_price_source: Option<String>,
+    pub reference_price_age_ms: Option<i64>,
+    pub rounded_order_price: Option<String>,
+    pub marketable_after_rounding: Option<bool>,
+    pub checked_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveIntentExecutionReadiness {
     pub can_execute: bool,
     pub intent_hash: Option<LiveIntentHash>,
@@ -1117,6 +1184,10 @@ pub struct LiveOrderPreview {
     pub intent: Option<LiveOrderIntent>,
     pub blocking_reasons: Vec<LiveBlockingReason>,
     pub validation_errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_price: Option<LiveReferencePriceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketability_check: Option<LiveMarketabilityCheck>,
     pub message: String,
 }
 

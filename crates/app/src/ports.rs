@@ -8,9 +8,10 @@ use relxen_domain::{
     Candle, LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAutoExecutorStatus,
     LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialValidationResult,
     LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
-    LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile,
-    LiveStateRecord, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent,
-    Symbol, SystemMetrics, Timeframe, Trade, Wallet,
+    LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus,
+    LiveReferencePriceSnapshot, LiveRiskProfile, LiveStateRecord, LiveSymbolRules,
+    LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
+    Trade, Wallet,
 };
 
 use crate::{AppError, AppResult, OutboundEvent};
@@ -158,6 +159,16 @@ pub trait LiveExchangePort: Send + Sync {
         environment: LiveEnvironment,
         symbol: Symbol,
     ) -> AppResult<LiveSymbolRules>;
+
+    async fn fetch_reference_price(
+        &self,
+        _environment: LiveEnvironment,
+        _symbol: Symbol,
+    ) -> AppResult<LiveReferencePriceSnapshot> {
+        Err(AppError::Exchange(
+            "live reference-price adapter is not configured".to_string(),
+        ))
+    }
 
     async fn create_listen_key(
         &self,
@@ -338,6 +349,16 @@ impl LiveExchangePort for UnavailableLiveExchange {
         _environment: LiveEnvironment,
         _symbol: Symbol,
     ) -> AppResult<LiveSymbolRules> {
+        Err(AppError::Exchange(
+            "live exchange adapter is not configured".to_string(),
+        ))
+    }
+
+    async fn fetch_reference_price(
+        &self,
+        _environment: LiveEnvironment,
+        _symbol: Symbol,
+    ) -> AppResult<LiveReferencePriceSnapshot> {
         Err(AppError::Exchange(
             "live exchange adapter is not configured".to_string(),
         ))

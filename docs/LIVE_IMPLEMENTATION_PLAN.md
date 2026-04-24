@@ -20,7 +20,7 @@ Rollback/fail-closed behavior: Keep live mode disabled and paper runtime unchang
 
 Goal: Add secure credential storage integration and masked credential validation without order placement.
 
-Status: Implemented in Live Foundations v0. Raw secrets are kept behind the secret-store abstraction; SQLite stores masked metadata only.
+Status: Implemented in Live Foundations v0 and extended with explicit env-backed local credential loading. Raw secure-store secrets are kept behind the secret-store abstraction, raw env secrets remain process-only, and SQLite stores masked metadata plus source only.
 
 Non-goals: No order submission, no account trading actions, no autonomous live runtime.
 
@@ -41,7 +41,7 @@ Tests required:
 
 Exit criteria:
 
-- Credentials can be saved to OS secure storage.
+- Credentials can be saved to OS secure storage; local env credentials can be surfaced as read-only masked summaries when explicitly enabled.
 - Metadata persists without raw secrets.
 - Validation endpoint returns typed masked status.
 - Live order placement remains impossible.
@@ -193,7 +193,7 @@ Rollback/fail-closed behavior: Disable auto-execution, engage kill switch, keep 
 
 Goal: Enable a tightly constrained manual mainnet canary path while keeping broad mainnet execution default-off and fail-closed.
 
-Status: Implemented as a default-off manual canary path. `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` blocks it by default. When enabled, manual MAINNET canary submission uses the same ACK-plus-authoritative-reconciliation pipeline as TESTNET, requires a configured risk profile, fresh shadow/rules/account state, dedicated one-way and single-asset-mode checks, arming, a fresh preview, and exact operator confirmation. MAINNET auto-execution remains blocked.
+Status: Implemented as a default-off manual canary path. `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` blocks it by default. When enabled, manual MAINNET canary submission uses the same ACK-plus-authoritative-reconciliation pipeline as TESTNET, requires a configured risk profile, fresh matching mainnet shadow/rules/account state, dedicated one-way and single-asset-mode checks, sufficient available balance, arming, a fresh non-marketable `LIMIT` preview after tick-size rounding, and exact operator confirmation. MAINNET auto-execution remains blocked. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` `LIMIT` canary submitted, canceled, reconciled flat, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 
 Non-goals: No broad exchange feature set, no MAINNET auto-execution, no multi-symbol runtime, no unattended operation claims.
 
@@ -211,7 +211,7 @@ Tests required:
 
 Exit criteria:
 
-- Mainnet canary requires server enablement and exact operator confirmation.
+- Mainnet canary requires server enablement, non-marketable `LIMIT` preview, and exact operator confirmation.
 - Operator-configured risk profile is required and enforced.
 - Reconciliation is exchange-authoritative.
 - Rollback to paper-only is documented and tested.
@@ -224,7 +224,7 @@ Rollback/fail-closed behavior: Kill switch, disarm, disable `RELXEN_ENABLE_MAINN
 
 Goal: Produce operational evidence for TESTNET execution, kill switch, cancel, flatten, restart repair, reconnect repair, auto-execution, and recent-window repair honesty before any MAINNET canary recommendation.
 
-Status: Completed with a real TESTNET soak on 2026-04-23. The run captured credential validation, readiness, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and duplicate-safe auto proof. The current evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` and the latest recommendation is CONDITIONAL GO for one bounded manual MAINNET canary session.
+Status: Completed with a real TESTNET soak on 2026-04-23. The run captured credential validation, readiness, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart repair, reconnect repair, and duplicate-safe auto proof. The current TESTNET execution evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`. The latest MAINNET canary evidence is `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 
 Non-goals: No new order types, no hidden drill trigger, no mainnet enablement, no broad incident-management subsystem.
 
@@ -253,7 +253,7 @@ Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=fals
 
 ## Smallest Safe Next Implementation Batch
 
-Run one single-order manual MAINNET canary session with the existing gates and capture a matching evidence bundle plus report update.
+Review the successful reference-price-fixed MAINNET canary bundle and decide the next bounded mainnet-readiness task.
 
 ## What Not To Do Next
 

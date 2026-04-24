@@ -9,11 +9,11 @@ use sqlx::{Row, SqlitePool};
 use relxen_app::{AppError, AppResult, Repository};
 use relxen_domain::{
     Candle, LiveAccountShadow, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord,
-    LiveIntentLock, LiveKillSwitchState, LiveModePreference, LiveOrderPreflightResult,
-    LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord, LogEvent,
-    Position, PositionSide, QuoteAsset, Settings, SignalEvent, SignalSide, Symbol, Timeframe,
-    Trade, TradeAction, TradeSource, Wallet,
+    LiveCredentialSource, LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionSnapshot,
+    LiveFillRecord, LiveIntentLock, LiveKillSwitchState, LiveModePreference,
+    LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile,
+    LiveStateRecord, LogEvent, Position, PositionSide, QuoteAsset, Settings, SignalEvent,
+    SignalSide, Symbol, Timeframe, Trade, TradeAction, TradeSource, Wallet,
 };
 
 pub struct SqliteRepository {
@@ -484,12 +484,13 @@ impl Repository for SqliteRepository {
         sqlx::query(
             r#"
             INSERT INTO live_credentials (
-              id, alias, environment, api_key_hint, validation_status, last_validated_at,
+              id, alias, environment, source, api_key_hint, validation_status, last_validated_at,
               last_validation_error, is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               alias = excluded.alias,
               environment = excluded.environment,
+              source = excluded.source,
               api_key_hint = excluded.api_key_hint,
               validation_status = excluded.validation_status,
               last_validated_at = excluded.last_validated_at,
@@ -501,6 +502,7 @@ impl Repository for SqliteRepository {
         .bind(credential.id.as_str())
         .bind(&credential.alias)
         .bind(credential.environment.as_str())
+        .bind(credential.source.as_str())
         .bind(&credential.api_key_hint)
         .bind(credential.validation_status.as_str())
         .bind(credential.last_validated_at)
@@ -1121,6 +1123,7 @@ fn row_to_live_credential(row: sqlx::sqlite::SqliteRow) -> AppResult<LiveCredent
         id: LiveCredentialId::new(row.get::<String, _>("id")),
         alias: row.get("alias"),
         environment: parse_live_environment(row.get("environment"))?,
+        source: parse_live_credential_source(row.get("source"))?,
         api_key_hint: row.get("api_key_hint"),
         validation_status: parse_live_validation_status(row.get("validation_status"))?,
         last_validated_at: row.get("last_validated_at"),
@@ -1207,6 +1210,10 @@ fn parse_live_environment(value: String) -> AppResult<LiveEnvironment> {
 }
 
 fn parse_live_validation_status(value: String) -> AppResult<LiveCredentialValidationStatus> {
+    value.parse().map_err(AppError::Validation)
+}
+
+fn parse_live_credential_source(value: String) -> AppResult<LiveCredentialSource> {
     value.parse().map_err(AppError::Validation)
 }
 

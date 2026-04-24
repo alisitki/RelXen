@@ -24,9 +24,9 @@ use relxen_domain::{
     LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
     LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
     LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord, LiveSymbolFilterSummary,
-    LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol,
-    SystemMetrics, Timeframe, Trade, Wallet,
+    LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile, LiveStateRecord,
+    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings,
+    SignalEvent, Symbol, SystemMetrics, Timeframe, Trade, Wallet,
 };
 
 pub fn candle(index: i64) -> Candle {
@@ -499,6 +499,8 @@ pub struct FakeLiveExchange {
     pub validation_status: LiveCredentialValidationStatus,
     pub account: Option<LiveAccountSnapshot>,
     pub rules: Option<LiveSymbolRules>,
+    pub reference_price: StdMutex<Option<LiveReferencePriceSnapshot>>,
+    pub fail_reference_price: bool,
     pub user_events: Mutex<VecDeque<Result<LiveUserDataEvent, AppError>>>,
     pub user_trades: Mutex<Vec<LiveFillRecord>>,
     pub preflight_accept: bool,
@@ -569,6 +571,12 @@ impl Default for FakeLiveExchange {
             validation_status: LiveCredentialValidationStatus::Valid,
             account: Some(fake_account_snapshot(LiveEnvironment::Testnet)),
             rules: Some(fake_symbol_rules(LiveEnvironment::Testnet, Symbol::BtcUsdt)),
+            reference_price: StdMutex::new(Some(fake_reference_price(
+                LiveEnvironment::Testnet,
+                Symbol::BtcUsdt,
+                "2000",
+            ))),
+            fail_reference_price: false,
             user_events: Mutex::new(VecDeque::new()),
             user_trades: Mutex::new(Vec::new()),
             preflight_accept: true,
@@ -647,6 +655,28 @@ impl LiveExchangePort for FakeLiveExchange {
                 rules
             })
             .ok_or_else(|| AppError::Exchange("symbol rules unavailable".to_string()))
+    }
+
+    async fn fetch_reference_price(
+        &self,
+        environment: LiveEnvironment,
+        symbol: Symbol,
+    ) -> AppResult<LiveReferencePriceSnapshot> {
+        if self.fail_reference_price {
+            return Err(AppError::Exchange(
+                "reference price unavailable".to_string(),
+            ));
+        }
+        self.reference_price
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|mut reference| {
+                reference.environment = environment;
+                reference.symbol = symbol;
+                reference
+            })
+            .ok_or_else(|| AppError::Exchange("reference price unavailable".to_string()))
     }
 
     async fn create_listen_key(
@@ -917,6 +947,26 @@ pub fn fake_symbol_rules(environment: LiveEnvironment, symbol: Symbol) -> LiveSy
             min_notional: Some(100.0),
         },
         fetched_at: relxen_app::now_ms(),
+    }
+}
+
+pub fn fake_reference_price(
+    environment: LiveEnvironment,
+    symbol: Symbol,
+    price: &str,
+) -> LiveReferencePriceSnapshot {
+    let now = relxen_app::now_ms();
+    LiveReferencePriceSnapshot {
+        environment,
+        symbol,
+        price: Some(price.to_string()),
+        source: Some("rest_mark_price".to_string()),
+        observed_at: Some(now),
+        fetched_at: Some(now),
+        age_ms: Some(0),
+        stale: false,
+        failure_reason: None,
+        blocking_reason: None,
     }
 }
 

@@ -18,9 +18,9 @@ use relxen_domain::{
     LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
     LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationResult,
     LiveCredentialValidationStatus, LiveEnvironment, LiveFillRecord, LiveOrderRecord,
-    LiveOrderSide, LiveOrderStatus, LiveOrderType, LivePositionSnapshot, LiveShadowBalance,
-    LiveShadowOrder, LiveShadowPosition, LiveSymbolFilterSummary, LiveSymbolRules,
-    LiveUserDataEvent, QuoteAsset, Symbol,
+    LiveOrderSide, LiveOrderStatus, LiveOrderType, LivePositionSnapshot,
+    LiveReferencePriceSnapshot, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
+    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, QuoteAsset, Symbol,
 };
 
 const MAINNET_REST_BASE: &str = "https://fapi.binance.com";
@@ -214,6 +214,44 @@ impl LiveExchangePort for BinanceLiveReadOnly {
             .find(|item| item.symbol == symbol.as_str())
             .ok_or_else(|| AppError::Exchange(format!("unsupported_symbol: {symbol}")))?
             .into_rules(environment, symbol, now_ms())
+    }
+
+    async fn fetch_reference_price(
+        &self,
+        environment: LiveEnvironment,
+        symbol: Symbol,
+    ) -> AppResult<LiveReferencePriceSnapshot> {
+        let url = self.endpoint(environment, "/fapi/v1/premiumIndex");
+        let fetched_at = now_ms();
+        let response = self
+            .client
+            .get(url)
+            .query(&[("symbol", symbol.as_str())])
+            .send()
+            .await
+            .map_err(|error| AppError::Exchange(format!("network_error: {error}")))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("reading Binance premiumIndex body")?;
+        if !status.is_success() {
+            return Err(map_binance_error(status.as_u16(), &body));
+        }
+        let mark_price: BinanceMarkPriceResponse = serde_json::from_str(&body)
+            .map_err(|error| AppError::Exchange(format!("response_decode_error: {error}")))?;
+        Ok(LiveReferencePriceSnapshot {
+            environment,
+            symbol,
+            price: Some(mark_price.mark_price),
+            source: Some("rest_mark_price".to_string()),
+            observed_at: mark_price.time.or(Some(fetched_at)),
+            fetched_at: Some(fetched_at),
+            age_ms: None,
+            stale: false,
+            failure_reason: None,
+            blocking_reason: None,
+        })
     }
 
     async fn create_listen_key(
@@ -615,6 +653,13 @@ fn classify_validation_error(error: &AppError) -> LiveCredentialValidationStatus
 struct BinanceError {
     code: i64,
     msg: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinanceMarkPriceResponse {
+    mark_price: String,
+    time: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1388,6 +1433,34 @@ mod tests {
         assert_eq!(rules.filters.tick_size, Some(0.10));
         assert_eq!(rules.filters.step_size, Some(0.001));
         assert_eq!(rules.filters.min_notional, Some(100.0));
+    }
+
+    #[tokio::test]
+    async fn reference_price_fetches_usdm_mark_price() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fapi/v1/premiumIndex"))
+            .and(query_param("symbol", "BTCUSDT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "symbol": "BTCUSDT",
+                "markPrice": "77950.10000000",
+                "time": 1710000000000_i64
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let reference = adapter(&server)
+            .fetch_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt)
+            .await
+            .unwrap();
+
+        assert_eq!(reference.environment, LiveEnvironment::Mainnet);
+        assert_eq!(reference.symbol, Symbol::BtcUsdt);
+        assert_eq!(reference.price.as_deref(), Some("77950.10000000"));
+        assert_eq!(reference.source.as_deref(), Some("rest_mark_price"));
+        assert_eq!(reference.observed_at, Some(1710000000000));
+        assert!(!reference.stale);
     }
 
     #[tokio::test]

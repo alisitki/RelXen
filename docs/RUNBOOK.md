@@ -28,8 +28,11 @@ cargo run -p relxen-server
 - `RELXEN_FRONTEND_DIST`: built frontend directory. Default is `web/dist`.
 - `RELXEN_LOG_LEVEL`: tracing filter. Default is `info,relxen=debug`.
 - `RELXEN_AUTO_START`: whether bootstrap should start the WebSocket runtime. Default is `true`.
+- `RELXEN_CREDENTIAL_SOURCE`: set to `env` to load local operator credentials from `.env`. This setting is authoritative.
+- `RELXEN_ENABLE_ENV_CREDENTIALS`: compatibility alias; `true` enables env credentials only when `RELXEN_CREDENTIAL_SOURCE` is unset.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables the manual MAINNET canary path when every other gate passes. Default is `false`; leave it false for normal paper/testnet operation.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for a bounded soak drill. Default is `false`; leave it off outside intentional soak validation.
+- `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: local-only env credential values when env source is enabled. `.env.example` must contain placeholders only and `.env` must never be committed.
 
 ## Database And Migrations
 
@@ -37,7 +40,7 @@ The backend creates the SQLite parent directory if needed and runs SQLx migratio
 
 Live shadow snapshots and preflight results are cached for operator visibility. Preflight never means an order was placed. TESTNET live order/fill records are separate execution records and must be interpreted through exchange reconciliation status.
 
-Raw live API secrets are not stored in SQLite. Normal runtime stores secret material through the OS secure-storage adapter; tests use in-memory secret stores.
+Raw live API secrets are not stored in SQLite. Normal production-minded runtime stores secret material through the OS secure-storage adapter; tests use in-memory secret stores. `RELXEN_CREDENTIAL_SOURCE=env` is a local operator convenience that reads raw values from process environment only and persists masked metadata plus source in SQLite. In this authoritative env-source mode, the TESTNET env credential is selected at startup ahead of any persisted secure-store TESTNET selection so local validation does not trigger OS secure-storage prompts. MAINNET env credentials are never auto-selected.
 
 SQLite is configured for WAL mode, `synchronous = normal`, and a busy timeout. To reset local paper state safely, use the UI `Reset Paper` action or:
 
@@ -102,9 +105,9 @@ If `resync_required` is emitted, the frontend reloads `/api/bootstrap` and rebui
 
 The LIVE ACCESS panel supports paper-mode operation, read-only shadow/preflight work, TESTNET manual execution, TESTNET closed-candle auto-execution, kill switch controls, and a manual MAINNET canary path that is disabled by default.
 
-1. Create a credential with alias, environment (`testnet` or `mainnet`), API key, and API secret.
-2. RelXen stores raw secret material in OS secure storage and stores only masked metadata in SQLite.
-3. Select the active credential.
+1. Create a credential with alias, environment (`testnet` or `mainnet`), API key, and API secret, or enable local env credentials with `RELXEN_CREDENTIAL_SOURCE=env`.
+2. RelXen stores secure-store raw material in OS secure storage; env raw material remains process-only. SQLite stores only masked metadata and source.
+3. Select the active credential. TESTNET env credentials may auto-select when no valid active TESTNET credential exists. When `RELXEN_CREDENTIAL_SOURCE=env` is set, the TESTNET env credential takes precedence over a persisted secure-store TESTNET selection. MAINNET env credentials never auto-select and require explicit selection.
 4. Run `Validate` to perform a signed read-only Binance USDⓈ-M Futures account check.
 5. Run `Refresh Readiness` to fetch symbol rules and a read-only account snapshot for the active symbol.
 6. If all gates pass, the state becomes `ready_read_only` and arming is enabled.
@@ -123,10 +126,10 @@ curl -X POST http://localhost:3000/api/live/drill/auto/replay-latest-signal \
 ```
 
 14. Use `Engage Kill Switch` to block all new live submissions immediately. Release requires explicit operator action.
-15. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is mainnet, a risk profile is configured, all gates pass, and the displayed exact confirmation text is entered.
+15. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is explicitly selected mainnet, a risk profile is configured, all gates pass, a non-marketable `LIMIT` preview remains non-marketable after tick-size rounding, and the displayed exact confirmation text is entered.
 16. Use cancel/cancel-all or flatten only when shadow state is coherent. RelXen cancels active-symbol open orders first for flatten, then submits a reduce-only MARKET close intent when safe.
 
-If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. Never put live API secrets in `.env`, SQLite, frontend storage, logs, or screenshots.
+If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. If env source is enabled with missing or partial variables, the UI/API report env credential blockers and paper mode remains usable. `.env` is local-only operator convenience, not production-grade secret storage; never commit it or put raw secrets in SQLite, frontend storage, logs, screenshots, docs, reports, or evidence bundles.
 
 ## Live Readiness States
 
@@ -183,15 +186,15 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 
 ## MAINNET Canary Procedure
 
-1. Review [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md). If the current recommendation is NO-GO, do not proceed.
+1. Review [LATEST_TESTNET_SOAK_REPORT.md](./LATEST_TESTNET_SOAK_REPORT.md) and [LATEST_MAINNET_CANARY_REPORT.md](./LATEST_MAINNET_CANARY_REPORT.md). If the current recommendation is NO-GO, do not proceed.
 2. Review [MAINNET_CANARY_CHECKLIST.md](./MAINNET_CANARY_CHECKLIST.md) and satisfy every hard precondition.
 3. Leave `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false` unless you are intentionally performing a canary drill.
 4. Stop TESTNET auto mode and engage the kill switch before changing credentials or environment.
 5. Set `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` only for the canary run, restart the backend, and verify `/api/live/status` reports canary server enablement.
-6. Select and validate a mainnet credential from OS secure storage.
+6. Explicitly select and validate a mainnet credential from OS secure storage or the env-backed `env-mainnet` summary. MAINNET env credentials are never auto-selected.
 7. Configure a conservative risk profile and verify the active symbol is `BTCUSDT` or `BTCUSDC`.
-8. Start shadow sync and verify dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
-9. Build a preview, read the exact required confirmation text, and enter it only if you intend to submit that exact MAINNET order.
+8. Start shadow sync and verify dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode, the shadow environment is `mainnet`, available balance is sufficient for required margin plus fee/buffer, the exchange min quantity does not force notional above the approved canary cap, and active-symbol exchange leverage is no greater than the approved canary maximum.
+9. Build a non-marketable `LIMIT` preview, read the exact required confirmation text, and enter it only if you intend to submit that exact MAINNET order. `MARKET` and rounded marketable `LIMIT` canary previews are blocked. The final MAINNET preview must include a fresh reference price from internal market state or the Binance USD-M REST mark-price resolver.
 10. Submit one manual canary action only. Wait for user-data/REST reconciliation before any follow-up.
 11. Export evidence immediately after the action.
 12. Disable the server canary flag after the drill and restart back into the default blocked state.
@@ -205,4 +208,4 @@ Real order submissions request `ACK`. `ACK` means Binance accepted the request, 
 
 ## Paper-Mode Boundaries
 
-RelXen v1 paper mode remains independent. Post-v1 RelXen can place/cancel/flatten TESTNET orders only through explicit operator actions and fail-closed gates. It does not place or cancel MAINNET orders, support conditional/algo orders, package Tauri, support auth, or run multiple symbols concurrently. Live credentials use OS secure storage for raw secrets and SQLite metadata only.
+RelXen v1 paper mode remains independent. Post-v1 RelXen can place/cancel/flatten TESTNET orders only through explicit operator actions and fail-closed gates. MAINNET remains default-off except for the manual canary gate, MAINNET auto remains blocked, conditional/algo orders are unsupported, and symbol scope is unchanged. Live credentials use OS secure storage by default or explicit local env loading; SQLite stores masked metadata only.

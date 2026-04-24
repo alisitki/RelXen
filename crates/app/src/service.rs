@@ -20,18 +20,19 @@ use relxen_domain::{
     LiveAccountSnapshot, LiveAssetBalance, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
     LiveAutoExecutorStatus, LiveBlockingReason, LiveCancelAllRequest, LiveCancelRequest,
     LiveCancelResult, LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret,
-    LiveCredentialSummary, LiveCredentialValidationResult, LiveCredentialValidationStatus,
-    LiveEnvironment, LiveExecutionAvailability, LiveExecutionRequest, LiveExecutionResult,
-    LiveExecutionSnapshot, LiveExecutionState, LiveFillRecord, LiveFlattenRequest,
-    LiveFlattenResult, LiveGateCheck, LiveIntentInput, LiveIntentLock, LiveIntentLockStatus,
-    LiveKillSwitchRequest, LiveKillSwitchState, LiveModePreference, LiveOrderPreflightResult,
-    LiveOrderPreview, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LivePositionSnapshot, LiveReadinessSnapshot, LiveReconciliationStatus, LiveRiskProfile,
-    LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
-    LiveShadowStreamState, LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord,
-    LiveStatusSnapshot, LiveSymbolRules, LiveUserDataEvent, LiveWarning, LogEvent, PaperEngine,
-    PerformanceStats, Position, QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings,
-    SignalEvent, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
+    LiveCredentialSource, LiveCredentialSummary, LiveCredentialValidationResult,
+    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionAvailability,
+    LiveExecutionRequest, LiveExecutionResult, LiveExecutionSnapshot, LiveExecutionState,
+    LiveFillRecord, LiveFlattenRequest, LiveFlattenResult, LiveGateCheck, LiveIntentInput,
+    LiveIntentLock, LiveIntentLockStatus, LiveKillSwitchRequest, LiveKillSwitchState,
+    LiveModePreference, LiveOrderPreflightResult, LiveOrderPreview, LiveOrderRecord, LiveOrderSide,
+    LiveOrderStatus, LiveOrderType, LivePositionSnapshot, LiveReadinessSnapshot,
+    LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile, LiveRuntimeState,
+    LiveShadowBalance, LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState,
+    LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord, LiveStatusSnapshot, LiveSymbolRules,
+    LiveUserDataEvent, LiveWarning, LogEvent, PaperEngine, PerformanceStats, Position, QuoteAsset,
+    RuntimeStatus, SetLiveModePreferenceRequest, Settings, SignalEvent, Symbol, SystemMetrics,
+    Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
 };
 
 use crate::events::{AppMetadata, BootstrapPayload, OutboundEvent};
@@ -61,8 +62,71 @@ pub struct ServiceOptions {
     pub live_intent_ttl_ms: i64,
     pub enable_mainnet_canary_execution: bool,
     pub enable_testnet_drill_helpers: bool,
+    pub env_credentials: EnvCredentialConfig,
     pub live_user_stream_forced_reconnect_ms: i64,
     pub live_repair_recent_window_limit: usize,
+}
+
+#[derive(Clone, Default)]
+pub struct EnvCredentialConfig {
+    pub enabled: bool,
+    pub authoritative: bool,
+    pub testnet: EnvCredentialPair,
+    pub mainnet: EnvCredentialPair,
+}
+
+impl EnvCredentialConfig {
+    fn pair(&self, environment: LiveEnvironment) -> &EnvCredentialPair {
+        match environment {
+            LiveEnvironment::Testnet => &self.testnet,
+            LiveEnvironment::Mainnet => &self.mainnet,
+        }
+    }
+
+    fn secret_for(&self, environment: LiveEnvironment) -> Option<LiveCredentialSecret> {
+        self.pair(environment).secret()
+    }
+}
+
+impl std::fmt::Debug for EnvCredentialConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvCredentialConfig")
+            .field("enabled", &self.enabled)
+            .field("authoritative", &self.authoritative)
+            .field("testnet", &self.testnet.redacted_state())
+            .field("mainnet", &self.mainnet.redacted_state())
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct EnvCredentialPair {
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+}
+
+impl EnvCredentialPair {
+    fn is_partial(&self) -> bool {
+        matches!(
+            (self.api_key.as_ref(), self.api_secret.as_ref()),
+            (Some(_), None) | (None, Some(_))
+        )
+    }
+
+    fn redacted_state(&self) -> &'static str {
+        match (self.api_key.as_ref(), self.api_secret.as_ref()) {
+            (Some(_), Some(_)) => "complete",
+            (None, None) => "missing",
+            _ => "partial",
+        }
+    }
+
+    fn secret(&self) -> Option<LiveCredentialSecret> {
+        Some(LiveCredentialSecret {
+            api_key: self.api_key.clone()?,
+            api_secret: self.api_secret.clone()?,
+        })
+    }
 }
 
 impl Default for ServiceOptions {
@@ -83,6 +147,7 @@ impl Default for ServiceOptions {
             live_intent_ttl_ms: 30_000,
             enable_mainnet_canary_execution: false,
             enable_testnet_drill_helpers: false,
+            env_credentials: EnvCredentialConfig::default(),
             live_user_stream_forced_reconnect_ms: 24 * 60 * 60 * 1_000,
             live_repair_recent_window_limit: 100,
         }
@@ -98,6 +163,13 @@ struct RuntimeHandle {
 enum MarketEventOrigin {
     Live,
     Recovery,
+}
+
+#[derive(Debug, Clone)]
+struct ReferencePriceResolution {
+    price: Decimal,
+    snapshot: Option<LiveReferencePriceSnapshot>,
+    blocking_reason: Option<LiveBlockingReason>,
 }
 
 #[derive(Debug)]
@@ -301,12 +373,151 @@ impl AppService {
     }
 
     pub async fn initialize(self: &Arc<Self>) -> AppResult<BootstrapPayload> {
+        self.sync_env_credentials().await?;
         let snapshot = self.rebuild_state("bootstrap").await?;
         let _ = self.repair_live_execution_recent_window().await;
         if self.options.auto_start {
             self.start_runtime().await?;
         }
         Ok(snapshot)
+    }
+
+    async fn sync_env_credentials(&self) -> AppResult<()> {
+        if !self.options.env_credentials.enabled {
+            self.delete_env_credential_metadata(LiveEnvironment::Testnet)
+                .await?;
+            self.delete_env_credential_metadata(LiveEnvironment::Mainnet)
+                .await?;
+            return Ok(());
+        }
+
+        let live_state = self.repository.load_live_state().await?;
+        let testnet_secret = self
+            .options
+            .env_credentials
+            .secret_for(LiveEnvironment::Testnet);
+        let mainnet_secret = self
+            .options
+            .env_credentials
+            .secret_for(LiveEnvironment::Mainnet);
+
+        self.sync_env_credential_metadata(LiveEnvironment::Testnet, testnet_secret.as_ref())
+            .await?;
+        self.sync_env_credential_metadata(LiveEnvironment::Mainnet, mainnet_secret.as_ref())
+            .await?;
+
+        if testnet_secret.is_some() && !self.env_pair_is_partial(LiveEnvironment::Testnet) {
+            let active_testnet = self
+                .repository
+                .active_live_credential(LiveEnvironment::Testnet)
+                .await?;
+            let active_testnet_valid = active_testnet.as_ref().is_some_and(|credential| {
+                credential.validation_status.is_valid()
+                    && !validation_is_stale(
+                        credential,
+                        self.options.live_validation_ttl_ms,
+                        now_ms(),
+                    )
+            });
+            if self.options.env_credentials.authoritative || !active_testnet_valid {
+                self.repository
+                    .select_live_credential(
+                        &env_credential_id(LiveEnvironment::Testnet),
+                        LiveEnvironment::Testnet,
+                    )
+                    .await?;
+                if self.options.env_credentials.authoritative
+                    || live_state.environment == LiveEnvironment::Testnet
+                    || active_testnet.is_none()
+                {
+                    self.set_live_environment(LiveEnvironment::Testnet).await?;
+                }
+            }
+        }
+
+        if self.env_pair_is_partial(LiveEnvironment::Testnet)
+            || self.env_pair_is_partial(LiveEnvironment::Mainnet)
+        {
+            warn!(
+                event = "env_credential_source_partial",
+                "env credential source is enabled but at least one key/secret pair is incomplete"
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn delete_env_credential_metadata(&self, environment: LiveEnvironment) -> AppResult<()> {
+        let id = env_credential_id(environment);
+        if self.repository.get_live_credential(&id).await?.is_some() {
+            self.repository.delete_live_credential(&id).await?;
+        }
+        Ok(())
+    }
+
+    async fn sync_env_credential_metadata(
+        &self,
+        environment: LiveEnvironment,
+        secret: Option<&LiveCredentialSecret>,
+    ) -> AppResult<()> {
+        let id = env_credential_id(environment);
+        let Some(secret) = secret else {
+            self.delete_env_credential_metadata(environment).await?;
+            return Ok(());
+        };
+        let now = now_ms();
+        let existing = self.repository.get_live_credential(&id).await?;
+        let api_key_hint = mask_api_key(&secret.api_key);
+        let preserved = existing
+            .as_ref()
+            .filter(|credential| credential.api_key_hint == api_key_hint);
+        let validation_status = preserved
+            .map(|credential| credential.validation_status)
+            .unwrap_or(LiveCredentialValidationStatus::Unknown);
+        let credential = LiveCredentialMetadata {
+            id,
+            alias: env_credential_alias(environment).to_string(),
+            environment,
+            source: LiveCredentialSource::Env,
+            api_key_hint,
+            validation_status,
+            last_validated_at: preserved.and_then(|credential| credential.last_validated_at),
+            last_validation_error: preserved
+                .and_then(|credential| credential.last_validation_error.clone()),
+            is_active: existing
+                .as_ref()
+                .map(|credential| credential.is_active)
+                .unwrap_or(false),
+            created_at: existing
+                .as_ref()
+                .map(|credential| credential.created_at)
+                .unwrap_or(now),
+            updated_at: now,
+        };
+        self.repository.upsert_live_credential(&credential).await
+    }
+
+    fn env_pair_is_partial(&self, environment: LiveEnvironment) -> bool {
+        self.options.env_credentials.pair(environment).is_partial()
+    }
+
+    fn env_credential_blockers(&self, environment: LiveEnvironment) -> Vec<LiveBlockingReason> {
+        if !self.options.env_credentials.enabled {
+            return Vec::new();
+        }
+        let pair = self.options.env_credentials.pair(environment);
+        if pair.is_partial() {
+            vec![LiveBlockingReason::EnvCredentialPartial]
+        } else if pair.secret().is_none() {
+            vec![LiveBlockingReason::EnvCredentialsMissing]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn runtime_credential_allowed(&self, credential: &LiveCredentialSummary) -> bool {
+        !self.options.env_credentials.authoritative
+            || credential.source == LiveCredentialSource::Env
     }
 
     pub async fn bootstrap(self: &Arc<Self>) -> AppResult<BootstrapPayload> {
@@ -628,6 +839,7 @@ impl AppService {
             id: id.clone(),
             alias: alias.to_string(),
             environment: payload.environment,
+            source: LiveCredentialSource::SecureStore,
             api_key_hint: mask_api_key(&secret.api_key),
             validation_status: LiveCredentialValidationStatus::Unknown,
             last_validated_at: None,
@@ -671,6 +883,12 @@ impl AppService {
             .get_live_credential(&id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("live credential not found: {id}")))?;
+        if credential.source == LiveCredentialSource::Env {
+            return Err(AppError::Conflict(
+                "env-backed credentials are read-only; update the local .env file and restart"
+                    .to_string(),
+            ));
+        }
 
         if let Some(alias) = payload.alias.as_deref() {
             let alias = alias.trim();
@@ -733,6 +951,15 @@ impl AppService {
 
     pub async fn delete_live_credential(&self, id: LiveCredentialId) -> AppResult<()> {
         let credential = self.repository.get_live_credential(&id).await?;
+        if credential
+            .as_ref()
+            .is_some_and(|credential| credential.source == LiveCredentialSource::Env)
+        {
+            return Err(AppError::Conflict(
+                "env-backed credentials are read-only; disable env credentials or update .env"
+                    .to_string(),
+            ));
+        }
         if credential.is_none() {
             let _ = self.secret_store.delete(&id).await;
             return Ok(());
@@ -763,6 +990,14 @@ impl AppService {
             .get_live_credential(&id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("live credential not found: {id}")))?;
+        if self.options.env_credentials.authoritative
+            && credential.source != LiveCredentialSource::Env
+        {
+            return Err(AppError::Conflict(
+                "RELXEN_CREDENTIAL_SOURCE=env is active; unset it to select secure-store credentials"
+                    .to_string(),
+            ));
+        }
         self.repository
             .select_live_credential(&id, credential.environment)
             .await?;
@@ -779,6 +1014,14 @@ impl AppService {
             .get_live_credential(&id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("live credential not found: {id}")))?;
+        if self.options.env_credentials.authoritative
+            && credential.source != LiveCredentialSource::Env
+        {
+            return Err(AppError::Conflict(
+                "RELXEN_CREDENTIAL_SOURCE=env is active; unset it to validate secure-store credentials"
+                    .to_string(),
+            ));
+        }
         info!(
             event = "credential_validation_started",
             credential_id = %id,
@@ -946,7 +1189,15 @@ impl AppService {
     pub async fn start_live_shadow(self: &Arc<Self>) -> AppResult<LiveStatusSnapshot> {
         let mut runtime = self.live_shadow_runtime.lock().await;
         if runtime.is_some() {
-            return self.live_status().await;
+            let live_state = self.repository.load_live_state().await?;
+            let reconciliation = self.load_reconciliation_cache().await?;
+            if reconciliation.stream.environment == live_state.environment {
+                return self.live_status().await;
+            }
+            if let Some(handle) = runtime.take() {
+                let _ = handle.stop_tx.send(());
+                let _ = handle.join_handle.await;
+            }
         }
 
         let (credential, secret, environment) = self.active_live_secret().await?;
@@ -1017,6 +1268,7 @@ impl AppService {
 
         reconciliation.state = LiveRuntimeState::ShadowRunning;
         reconciliation.stream.state = LiveShadowStreamState::Running;
+        reconciliation.stream.environment = environment;
         reconciliation.stream.listen_key_hint = Some(mask_listen_key(&listen_key));
         reconciliation.stream.status_since = now_ms();
         reconciliation.stream.detail = Some("user-data stream running".to_string());
@@ -1098,6 +1350,7 @@ impl AppService {
         let mut reconciliation = self.load_reconciliation_cache().await?;
         reconciliation.state = LiveRuntimeState::ShadowRunning;
         reconciliation.shadow = Some(shadow);
+        reconciliation.stream.environment = environment;
         reconciliation.stream.last_rest_sync_at = Some(now);
         reconciliation.stream.stale = false;
         reconciliation.blocking_reasons.clear();
@@ -1121,14 +1374,15 @@ impl AppService {
         let live_status = self.state.lock().await.live_status.clone();
         let settings = self.state.lock().await.settings.clone();
         let latest_signal = self.state.lock().await.signals.last().cloned();
-        let reference_price = self
-            .state
-            .lock()
-            .await
-            .candles
-            .last()
-            .map(|candle| Decimal::from_str(&candle.close.to_string()).unwrap_or(Decimal::ZERO))
-            .unwrap_or(Decimal::ZERO);
+        let reference = self
+            .resolve_reference_price_for_preview(live_status.environment, settings.active_symbol)
+            .await;
+        let reference_price = reference.price;
+        let reference_price_fresh = reference.blocking_reason.is_none()
+            && reference
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.stale && snapshot.price.is_some());
         let rules = live_status
             .symbol_rules
             .clone()
@@ -1147,6 +1401,9 @@ impl AppService {
             latest_signal,
             order_type,
             reference_price,
+            reference_price_fresh,
+            reference_price_snapshot: reference.snapshot,
+            reference_price_blocking_reason: reference.blocking_reason,
             limit_price,
             now_ms: now_ms(),
         });
@@ -1620,6 +1877,40 @@ impl AppService {
         }
         if environment == LiveEnvironment::Mainnet {
             let required = mainnet_confirmation_phrase(&intent);
+            if intent.order_type != LiveOrderType::Limit {
+                return Ok(blocked_execution_result(
+                    LiveBlockingReason::MainnetCanaryLimitRequired,
+                    "MAINNET canary requires a non-marketable LIMIT order.",
+                    now,
+                ));
+            }
+            let reference = self
+                .current_reference_price(environment, intent.symbol)
+                .await;
+            if let Some(reason) = reference.blocking_reason {
+                return Ok(blocked_execution_result(
+                    reason,
+                    "MAINNET canary requires a fresh reference price.",
+                    now,
+                ));
+            }
+            let reference_price = reference.price;
+            let limit_price = intent
+                .price
+                .as_deref()
+                .and_then(|price| Decimal::from_str(price).ok())
+                .unwrap_or(Decimal::ZERO);
+            let marketable = match intent.side {
+                LiveOrderSide::Buy => limit_price >= reference_price,
+                LiveOrderSide::Sell => limit_price <= reference_price,
+            };
+            if marketable {
+                return Ok(blocked_execution_result(
+                    LiveBlockingReason::MainnetCanaryLimitMarketable,
+                    "MAINNET canary LIMIT price is marketable after tick-size rounding.",
+                    now,
+                ));
+            }
             if !self.options.enable_mainnet_canary_execution {
                 self.publisher.publish(OutboundEvent::LiveExecutionBlocked {
                     reason: LiveBlockingReason::MainnetCanaryDisabled
@@ -1854,7 +2145,8 @@ impl AppService {
             event = "live_cancel_requested",
             order_ref = %request.order_ref,
             client_order_id = %order.client_order_id,
-            "submitting Binance testnet cancel request"
+            environment = %environment,
+            "submitting Binance cancel request"
         );
         match self
             .live_exchange
@@ -1876,15 +2168,19 @@ impl AppService {
                     event = "live_cancel_succeeded",
                     client_order_id = %order.client_order_id,
                     status = %order.status.as_str(),
-                    "Binance testnet cancel acknowledged"
+                    environment = %environment,
+                    "Binance cancel acknowledged"
                 );
+                let message = if environment == LiveEnvironment::Mainnet {
+                    "MAINNET canary cancel submitted; final state follows exchange reconciliation."
+                } else {
+                    "TESTNET cancel submitted; final state follows exchange reconciliation."
+                };
                 Ok(LiveCancelResult {
                     accepted: true,
                     order: Some(order),
                     blocking_reason: None,
-                    message:
-                        "TESTNET cancel submitted; final state follows exchange reconciliation."
-                            .to_string(),
+                    message: message.to_string(),
                     created_at: now_ms(),
                 })
             }
@@ -2227,7 +2523,13 @@ impl AppService {
         let active_credential = self
             .repository
             .active_live_credential(live_state.environment)
-            .await?;
+            .await?
+            .filter(|credential| self.runtime_credential_allowed(credential));
+        let extra_blocking = if active_credential.is_none() {
+            self.env_credential_blockers(live_state.environment)
+        } else {
+            Vec::new()
+        };
         let current_live = self.state.lock().await.live_status.clone();
         let reconciliation = self.load_reconciliation_cache().await?;
         let account_snapshot = refresh_account_snapshot_from_shadow(
@@ -2251,7 +2553,7 @@ impl AppService {
             risk_profile: self.repository.load_live_risk_profile().await?,
             auto_executor: self.repository.load_live_auto_executor().await?,
             paper_position_open: self.current_paper_position_open().await,
-            extra_blocking: Vec::new(),
+            extra_blocking,
             now_ms: now_ms(),
             options: &self.options,
         }))
@@ -2301,6 +2603,208 @@ impl AppService {
         self.state.lock().await.engine.position.is_some()
     }
 
+    async fn resolve_reference_price_for_preview(
+        &self,
+        environment: LiveEnvironment,
+        symbol: Symbol,
+    ) -> ReferencePriceResolution {
+        let force_refresh = if environment == LiveEnvironment::Mainnet {
+            let state = self.state.lock().await;
+            let latest_observed_at = state
+                .candles
+                .last()
+                .filter(|candle| candle.symbol == symbol)
+                .map(|candle| {
+                    state
+                        .connection_state
+                        .last_message_time
+                        .unwrap_or(candle.close_time)
+                });
+            let release_after_reference =
+                state
+                    .live_status
+                    .kill_switch
+                    .released_at
+                    .is_some_and(|released_at| {
+                        latest_observed_at
+                            .map(|observed_at| released_at >= observed_at)
+                            .unwrap_or(true)
+                    });
+            let reconnect_after_reference = matches!(
+                state.connection_state.status,
+                ConnectionStatus::Reconnecting
+                    | ConnectionStatus::Stale
+                    | ConnectionStatus::Resynced
+            ) && state.connection_state.status_since.is_some_and(
+                |status_since| {
+                    latest_observed_at
+                        .map(|observed_at| status_since >= observed_at)
+                        .unwrap_or(true)
+                },
+            );
+            release_after_reference || reconnect_after_reference
+        } else {
+            false
+        };
+        self.resolve_reference_price(environment, symbol, force_refresh)
+            .await
+    }
+
+    async fn current_reference_price(
+        &self,
+        environment: LiveEnvironment,
+        symbol: Symbol,
+    ) -> ReferencePriceResolution {
+        self.resolve_reference_price(environment, symbol, true)
+            .await
+    }
+
+    async fn resolve_reference_price(
+        &self,
+        environment: LiveEnvironment,
+        symbol: Symbol,
+        force_refresh: bool,
+    ) -> ReferencePriceResolution {
+        let now = now_ms();
+        let internal = {
+            let state = self.state.lock().await;
+            state
+                .candles
+                .last()
+                .filter(|candle| candle.symbol == symbol)
+                .map(|candle| {
+                    let price =
+                        Decimal::from_str(&candle.close.to_string()).unwrap_or(Decimal::ZERO);
+                    let observed_at = state
+                        .connection_state
+                        .last_message_time
+                        .unwrap_or(candle.close_time);
+                    let age_ms = now.saturating_sub(observed_at);
+                    let fresh_by_stream = state.connection_state.last_message_time.is_some()
+                        && age_ms <= self.options.live_intent_ttl_ms;
+                    let fresh_by_candle = price > Decimal::ZERO
+                        && now
+                            <= candle
+                                .close_time
+                                .saturating_add(state.settings.timeframe.duration_ms() * 2);
+                    let fresh = price > Decimal::ZERO && (fresh_by_stream || fresh_by_candle);
+                    LiveReferencePriceSnapshot {
+                        environment,
+                        symbol,
+                        price: if price > Decimal::ZERO {
+                            Some(decimal_to_exchange_string(price))
+                        } else {
+                            None
+                        },
+                        source: Some("internal_market_candle".to_string()),
+                        observed_at: Some(observed_at),
+                        fetched_at: Some(observed_at),
+                        age_ms: Some(age_ms),
+                        stale: !fresh,
+                        failure_reason: if fresh {
+                            None
+                        } else {
+                            Some("reference_price_stale".to_string())
+                        },
+                        blocking_reason: if fresh {
+                            None
+                        } else {
+                            Some(LiveBlockingReason::ReferencePriceStale)
+                        },
+                    }
+                })
+        };
+        if !force_refresh {
+            if let Some(snapshot) = internal.as_ref().filter(|snapshot| !snapshot.stale) {
+                let price = snapshot
+                    .price
+                    .as_deref()
+                    .and_then(|price| Decimal::from_str(price).ok())
+                    .unwrap_or(Decimal::ZERO);
+                return ReferencePriceResolution {
+                    price,
+                    snapshot: Some(snapshot.clone()),
+                    blocking_reason: None,
+                };
+            }
+        }
+
+        match self
+            .live_exchange
+            .fetch_reference_price(environment, symbol)
+            .await
+        {
+            Ok(mut snapshot) => {
+                let fetched_at = snapshot.fetched_at.unwrap_or(now);
+                let observed_at = snapshot.observed_at.unwrap_or(fetched_at);
+                let age_ms = now.saturating_sub(observed_at);
+                let price = snapshot
+                    .price
+                    .as_deref()
+                    .and_then(|price| Decimal::from_str(price).ok())
+                    .unwrap_or(Decimal::ZERO);
+                let stale = price <= Decimal::ZERO || age_ms > self.options.live_intent_ttl_ms;
+                snapshot.environment = environment;
+                snapshot.symbol = symbol;
+                snapshot.fetched_at = Some(fetched_at);
+                snapshot.observed_at = Some(observed_at);
+                snapshot.age_ms = Some(age_ms);
+                snapshot.stale = stale;
+                if stale {
+                    snapshot.failure_reason = Some("reference_price_stale".to_string());
+                    snapshot.blocking_reason = Some(LiveBlockingReason::ReferencePriceStale);
+                } else {
+                    snapshot.failure_reason = None;
+                    snapshot.blocking_reason = None;
+                }
+                ReferencePriceResolution {
+                    price,
+                    blocking_reason: snapshot.blocking_reason,
+                    snapshot: Some(snapshot),
+                }
+            }
+            Err(error) => {
+                warn!(
+                    event = "reference_price_refresh_failed",
+                    environment = %environment,
+                    symbol = %symbol,
+                    detail = %error,
+                    "failed to refresh live reference price"
+                );
+                let fallback = internal.unwrap_or_else(|| LiveReferencePriceSnapshot {
+                    environment,
+                    symbol,
+                    price: None,
+                    source: Some("rest_mark_price".to_string()),
+                    observed_at: None,
+                    fetched_at: Some(now),
+                    age_ms: None,
+                    stale: true,
+                    failure_reason: Some("reference_price_unavailable".to_string()),
+                    blocking_reason: Some(LiveBlockingReason::ReferencePriceUnavailable),
+                });
+                let reason = if fallback.price.is_some() {
+                    LiveBlockingReason::ReferencePriceSourceFailed
+                } else {
+                    LiveBlockingReason::ReferencePriceUnavailable
+                };
+                let mut snapshot = fallback;
+                snapshot.stale = true;
+                snapshot.failure_reason = Some(format!("reference_price_source_failed: {error}"));
+                snapshot.blocking_reason = Some(reason);
+                ReferencePriceResolution {
+                    price: snapshot
+                        .price
+                        .as_deref()
+                        .and_then(|price| Decimal::from_str(price).ok())
+                        .unwrap_or(Decimal::ZERO),
+                    snapshot: Some(snapshot),
+                    blocking_reason: Some(reason),
+                }
+            }
+        }
+    }
+
     async fn active_live_secret(
         &self,
     ) -> AppResult<(LiveCredentialSummary, LiveCredentialSecret, LiveEnvironment)> {
@@ -2310,6 +2814,14 @@ impl AppService {
             .active_live_credential(live_state.environment)
             .await?
             .ok_or_else(|| AppError::Conflict("no active live credential selected".to_string()))?;
+        if self.options.env_credentials.authoritative
+            && credential.source != LiveCredentialSource::Env
+        {
+            return Err(AppError::Conflict(
+                "RELXEN_CREDENTIAL_SOURCE=env is active; secure-store credential reads are disabled"
+                    .to_string(),
+            ));
+        }
         let secret = self.secret_store.read(&credential.id).await?;
         Ok((credential, secret, live_state.environment))
     }
@@ -2508,6 +3020,7 @@ impl AppService {
         reconciliation.state = LiveRuntimeState::ShadowRunning;
         reconciliation.shadow = Some(shadow);
         reconciliation.stream.state = LiveShadowStreamState::Running;
+        reconciliation.stream.environment = environment;
         reconciliation.stream.last_rest_sync_at = Some(now);
         reconciliation.stream.stale = false;
         reconciliation.blocking_reasons.clear();
@@ -2574,6 +3087,7 @@ impl AppService {
                                     let mut reconciliation = self.load_reconciliation_cache().await.unwrap_or_default();
                                     reconciliation.stream.listen_key_hint = Some(mask_listen_key(&listen_key));
                                     reconciliation.stream.state = LiveShadowStreamState::Running;
+                                    reconciliation.stream.environment = environment;
                                     reconciliation.stream.status_since = now_ms();
                                     reconciliation.stream.reconnect_attempts = reconciliation.stream.reconnect_attempts.saturating_add(1);
                                     reconciliation.stream.detail = Some("forced 24h user-data reconnect completed".to_string());
@@ -2639,6 +3153,7 @@ impl AppService {
                 let mut reconciliation = self.load_reconciliation_cache().await?;
                 reconciliation.state = LiveRuntimeState::ShadowRunning;
                 reconciliation.stream.state = LiveShadowStreamState::Running;
+                reconciliation.stream.environment = environment;
                 reconciliation.stream.last_event_time = shadow.last_event_time;
                 reconciliation.stream.stale = false;
                 reconciliation.stream.detail = Some("ACCOUNT_UPDATE applied".to_string());
@@ -2675,6 +3190,7 @@ impl AppService {
                 let mut reconciliation = self.load_reconciliation_cache().await?;
                 reconciliation.state = LiveRuntimeState::ShadowRunning;
                 reconciliation.stream.state = LiveShadowStreamState::Running;
+                reconciliation.stream.environment = environment;
                 reconciliation.stream.last_event_time = Some(now);
                 reconciliation.shadow = Some(shadow);
                 reconciliation.updated_at = now;
@@ -2742,7 +3258,8 @@ impl AppService {
         let active_credential = self
             .repository
             .active_live_credential(live_state.environment)
-            .await?;
+            .await?
+            .filter(|credential| self.runtime_credential_allowed(credential));
         let paper_position_open = self.current_paper_position_open().await;
         let kill_switch = self.repository.load_live_kill_switch().await?;
         let risk_profile = self.repository.load_live_risk_profile().await?;
@@ -2752,6 +3269,8 @@ impl AppService {
         let mut symbol_rules = None;
 
         let Some(credential) = active_credential.clone() else {
+            let mut missing_blocking = vec![LiveBlockingReason::NoActiveCredential];
+            missing_blocking.extend(self.env_credential_blockers(live_state.environment));
             return Ok(build_live_status(LiveStatusBuildInput {
                 live_state,
                 active_credential: None,
@@ -2769,7 +3288,7 @@ impl AppService {
                 risk_profile: risk_profile.clone(),
                 auto_executor: auto_executor.clone(),
                 paper_position_open,
-                extra_blocking: vec![LiveBlockingReason::NoActiveCredential],
+                extra_blocking: missing_blocking,
                 now_ms: now_ms(),
                 options: &self.options,
             }));
@@ -3699,6 +4218,9 @@ impl AppService {
             order_type: auto.order_type,
             reference_price: Decimal::from_str(&reference_price.to_string())
                 .unwrap_or(Decimal::ZERO),
+            reference_price_fresh: true,
+            reference_price_snapshot: None,
+            reference_price_blocking_reason: None,
             limit_price: None,
             now_ms: now_ms(),
         });
@@ -4328,6 +4850,20 @@ fn mask_api_key(api_key: &str) -> String {
     format!("{first}…{last}")
 }
 
+pub fn env_credential_id(environment: LiveEnvironment) -> LiveCredentialId {
+    LiveCredentialId::new(match environment {
+        LiveEnvironment::Testnet => "env-testnet",
+        LiveEnvironment::Mainnet => "env-mainnet",
+    })
+}
+
+fn env_credential_alias(environment: LiveEnvironment) -> &'static str {
+    match environment {
+        LiveEnvironment::Testnet => "env-testnet",
+        LiveEnvironment::Mainnet => "env-mainnet",
+    }
+}
+
 fn validation_is_stale(
     credential: &LiveCredentialSummary,
     validation_ttl_ms: i64,
@@ -4594,6 +5130,20 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
     if reconciliation.stream.state == LiveShadowStreamState::Degraded {
         blocking_reasons.push(LiveBlockingReason::ShadowStateAmbiguous);
     }
+    let has_shadow_context = reconciliation.shadow.is_some()
+        || reconciliation.stream.state != LiveShadowStreamState::Stopped;
+    if has_shadow_context && reconciliation.stream.environment != live_state.environment {
+        warnings.push(LiveWarning::ShadowStreamStale);
+        blocking_reasons.push(LiveBlockingReason::ShadowStateAmbiguous);
+        reconciliation.stream.stale = true;
+    }
+    if reconciliation
+        .shadow
+        .as_ref()
+        .is_some_and(|shadow| shadow.environment != live_state.environment)
+    {
+        blocking_reasons.push(LiveBlockingReason::ShadowStateAmbiguous);
+    }
     if reconciliation.stream.state == LiveShadowStreamState::Running
         && reconciliation
             .stream
@@ -4821,6 +5371,12 @@ fn build_execution_status(
         }
         _ => blocking.push(LiveBlockingReason::ShadowStreamDown),
     }
+    let has_shadow_context = reconciliation.shadow.is_some()
+        || reconciliation.stream.state != LiveShadowStreamState::Stopped;
+    if has_shadow_context && reconciliation.stream.environment != live_state.environment {
+        blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
+        warnings.push(LiveWarning::ShadowStreamStale);
+    }
     if reconciliation.stream.stale {
         blocking.push(LiveBlockingReason::StaleShadowState);
         warnings.push(LiveWarning::ShadowStreamStale);
@@ -4835,6 +5391,9 @@ fn build_execution_status(
     match reconciliation.shadow.as_ref() {
         Some(shadow) => {
             if shadow.ambiguous {
+                blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
+            }
+            if shadow.environment != live_state.environment {
                 blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
             }
             if shadow.multi_assets_margin.unwrap_or(false)

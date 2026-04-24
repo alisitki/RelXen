@@ -66,6 +66,7 @@ const credential: LiveCredentialSummary = {
   id: "cred-1",
   alias: "testnet-readonly",
   environment: "testnet",
+  source: "secure_store",
   api_key_hint: "abcd...7890",
   validation_status: "valid",
   last_validated_at: 1_000,
@@ -221,6 +222,25 @@ describe("live access panel", () => {
     expect(screen.getByText("testnet_environment, validation_stale")).toBeTruthy();
     expect(screen.getByText(/BTCUSDT TRADING tick 0.1/)).toBeTruthy();
     expect(screen.getByText(/available 900/)).toBeTruthy();
+  });
+
+  it("labels env credentials without exposing or replacing secrets", async () => {
+    const envCredential: LiveCredentialSummary = {
+      ...credential,
+      id: "env-testnet",
+      alias: "env-testnet",
+      source: "env",
+      api_key_hint: "envt...5678"
+    };
+    useAppStore.getState().setLiveStatus(readyStatus({ active_credential: envCredential }));
+    vi.mocked(listLiveCredentials).mockResolvedValue([envCredential]);
+
+    renderWithClient(<LiveAccessPanel />);
+
+    expect(await screen.findByText("ENV TESTNET · env-testnet · envt...5678")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "REPLACE STORED SECRET" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Update Credential" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("renders validation success and validation failure feedback", async () => {

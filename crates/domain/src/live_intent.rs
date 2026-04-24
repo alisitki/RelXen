@@ -5,9 +5,9 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::{
-    LiveAccountShadow, LiveBlockingReason, LiveEnvironment, LiveOrderIntent, LiveOrderPreview,
-    LiveOrderSide, LiveOrderSizingBreakdown, LiveOrderType, LiveSymbolRules, Settings, SignalEvent,
-    SignalSide, Symbol,
+    LiveAccountShadow, LiveBlockingReason, LiveEnvironment, LiveMarketabilityCheck,
+    LiveOrderIntent, LiveOrderPreview, LiveOrderSide, LiveOrderSizingBreakdown, LiveOrderType,
+    LiveReferencePriceSnapshot, LiveSymbolRules, Settings, SignalEvent, SignalSide, Symbol,
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,9 @@ pub struct LiveIntentInput {
     pub latest_signal: Option<SignalEvent>,
     pub order_type: LiveOrderType,
     pub reference_price: Decimal,
+    pub reference_price_fresh: bool,
+    pub reference_price_snapshot: Option<LiveReferencePriceSnapshot>,
+    pub reference_price_blocking_reason: Option<LiveBlockingReason>,
     pub limit_price: Option<Decimal>,
     pub now_ms: i64,
 }
@@ -38,6 +41,10 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
     }
     if input.shadow.ambiguous {
         blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
+    }
+    if input.shadow.environment != input.environment {
+        blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
+        errors.push("live shadow environment does not match active environment".to_string());
     }
     if input.shadow.multi_assets_margin.unwrap_or(false) {
         blocking.push(LiveBlockingReason::UnsupportedAccountMode);
@@ -64,13 +71,43 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
         );
     };
 
+    if input.environment == LiveEnvironment::Mainnet {
+        if input.order_type != LiveOrderType::Limit {
+            blocking.push(LiveBlockingReason::MainnetCanaryLimitRequired);
+            errors.push("MAINNET canary requires a non-marketable LIMIT order".to_string());
+        }
+        if let Some(reason) = input.reference_price_blocking_reason {
+            blocking.push(reason);
+            errors.push(format!(
+                "fresh reference price is unavailable for MAINNET canary: {}",
+                reason.as_str()
+            ));
+        } else if !input.reference_price_fresh || input.reference_price <= Decimal::ZERO {
+            blocking.push(LiveBlockingReason::ReferencePriceUnavailable);
+            errors.push("fresh reference price is unavailable for MAINNET canary".to_string());
+        }
+        if !blocking.is_empty() {
+            return blocked_preview(
+                input.now_ms,
+                blocking,
+                errors,
+                input.reference_price_snapshot.clone(),
+            );
+        }
+    }
+
     let price = match input.order_type {
         LiveOrderType::Market => input.reference_price,
         LiveOrderType::Limit => {
             let Some(limit_price) = input.limit_price else {
                 blocking.push(LiveBlockingReason::IntentUnavailable);
                 errors.push("limit order preview requires limit_price".to_string());
-                return blocked_preview(input.now_ms, blocking, errors);
+                return blocked_preview(
+                    input.now_ms,
+                    blocking,
+                    errors,
+                    input.reference_price_snapshot.clone(),
+                );
             };
             let tick = decimal_from_option(input.rules.filters.tick_size, "tick_size", &mut errors);
             let rounded = tick
@@ -83,6 +120,47 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
             }
             rounded
         }
+    };
+    if input.environment == LiveEnvironment::Mainnet {
+        let marketable = match side {
+            LiveOrderSide::Buy => price >= input.reference_price,
+            LiveOrderSide::Sell => price <= input.reference_price,
+        };
+        if marketable {
+            blocking.push(LiveBlockingReason::MainnetCanaryLimitMarketable);
+            errors.push(
+                "MAINNET canary LIMIT price is marketable after tick-size rounding".to_string(),
+            );
+        }
+    }
+    let marketability_check = if input.environment == LiveEnvironment::Mainnet {
+        Some(LiveMarketabilityCheck {
+            reference_price: if input.reference_price > Decimal::ZERO {
+                Some(decimal_to_exchange_string(input.reference_price))
+            } else {
+                None
+            },
+            reference_price_source: input
+                .reference_price_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.source.clone()),
+            reference_price_age_ms: input
+                .reference_price_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.age_ms),
+            rounded_order_price: if input.order_type == LiveOrderType::Limit {
+                Some(decimal_to_exchange_string(price))
+            } else {
+                None
+            },
+            marketable_after_rounding: Some(match side {
+                LiveOrderSide::Buy => price >= input.reference_price,
+                LiveOrderSide::Sell => price <= input.reference_price,
+            }),
+            checked_at: input.now_ms,
+        })
+    } else {
+        None
     };
 
     let fixed_notional = decimal_from_f64(input.settings.fixed_notional);
@@ -140,7 +218,12 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
     blocking.dedup();
 
     if !blocking.is_empty() {
-        return blocked_preview(input.now_ms, blocking, errors);
+        return blocked_preview(
+            input.now_ms,
+            blocking,
+            errors,
+            input.reference_price_snapshot.clone(),
+        );
     }
 
     let quantity = decimal_to_exchange_string(rounded_quantity);
@@ -223,6 +306,8 @@ pub fn build_live_order_preview(input: LiveIntentInput) -> LiveOrderPreview {
         intent: Some(intent),
         blocking_reasons: Vec::new(),
         validation_errors: errors,
+        reference_price: input.reference_price_snapshot,
+        marketability_check,
         message,
     }
 }
@@ -274,6 +359,7 @@ fn blocked_preview(
     built_at: i64,
     mut blocking_reasons: Vec<LiveBlockingReason>,
     validation_errors: Vec<String>,
+    reference_price: Option<LiveReferencePriceSnapshot>,
 ) -> LiveOrderPreview {
     blocking_reasons.sort_by_key(|reason| reason.as_str());
     blocking_reasons.dedup();
@@ -282,6 +368,8 @@ fn blocked_preview(
         intent: None,
         blocking_reasons,
         validation_errors,
+        reference_price,
+        marketability_check: None,
         message: "PREFLIGHT BLOCKED. No exchange request was sent.".to_string(),
     }
 }

@@ -14,9 +14,9 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Optional max exposure by quote asset.
 - Quote-asset-specific balance checks for `USDT` and `USDC`.
 - Minimum free balance after estimated fee and margin.
-- Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true` and all canary gates.
+- Mainnet/testnet environment separation. MAINNET auto-execution is blocked; manual MAINNET canary requires `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, an explicitly selected mainnet credential, matching mainnet shadow/reconciliation environment, sufficient available balance, a fresh reference price from internal market state or Binance USD-M REST mark price, a non-marketable `LIMIT` after tick-size rounding, and all canary gates.
 - Explicit operator-configured risk profile before MAINNET canary readiness.
-- Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session. The current evidence bundle is `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/` and supports a bounded CONDITIONAL GO for one manual canary only.
+- Real TESTNET soak evidence should be captured and reviewed before any MAINNET canary session. The current successful MAINNET canary evidence bundle is `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 
 ## Runtime Guards
 
@@ -48,7 +48,11 @@ Live runtime may start only when all are true:
 - Market data is connected and not stale.
 - Operator has confirmed the current environment, especially mainnet.
 - Dedicated position-mode and multi-assets-mode checks report one-way and single-asset mode.
+- Shadow stream/account environment matches active mainnet.
+- Available mainnet balance is sufficient for required margin plus fee/buffer, and exchange min quantity does not force notional above the approved canary cap.
+- Active-symbol account/exchange leverage is no greater than the approved canary maximum.
 - MAINNET canary has the server canary flag enabled and exact confirmation text for the current preview.
+- MAINNET canary preview is `LIMIT`, non-marketable after rounding, and based on a fresh reference price.
 - MAINNET canary review has the current TESTNET soak evidence bundle and updated checklist.
 
 ## Stop Conditions
