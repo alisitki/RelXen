@@ -18,10 +18,14 @@ vi.mock("../api/client", async (importOriginal) => {
     disarmLive: vi.fn(),
     engageLiveKillSwitch: vi.fn(),
     executeLivePreview: vi.fn(),
+    exportMainnetAutoEvidence: vi.fn(),
     flattenLivePosition: vi.fn(),
     flattenLivePositionWithPayload: vi.fn(),
     getLiveIntentPreview: vi.fn(),
+    getLatestMainnetAutoLessons: vi.fn(),
+    getMainnetAutoStatus: vi.fn(),
     listLiveCredentials: vi.fn(),
+    listMainnetAutoDecisions: vi.fn(),
     liveStartCheck: vi.fn(),
     refreshLiveReadiness: vi.fn(),
     refreshLiveShadow: vi.fn(),
@@ -30,8 +34,11 @@ vi.mock("../api/client", async (importOriginal) => {
     selectLiveCredential: vi.fn(),
     setLiveModePreference: vi.fn(),
     startLiveAuto: vi.fn(),
+    startMainnetAutoDryRun: vi.fn(),
+    startMainnetAutoLiveBlocked: vi.fn(),
     startLiveShadow: vi.fn(),
     stopLiveAuto: vi.fn(),
+    stopMainnetAutoDryRun: vi.fn(),
     stopLiveShadow: vi.fn(),
     updateLiveCredential: vi.fn(),
     validateLiveCredential: vi.fn()
@@ -45,14 +52,21 @@ import {
   createLiveCredential,
   disarmLive,
   executeLivePreview,
+  exportMainnetAutoEvidence,
   flattenLivePosition,
   getLiveIntentPreview,
+  getLatestMainnetAutoLessons,
+  getMainnetAutoStatus,
   listLiveCredentials,
+  listMainnetAutoDecisions,
   liveStartCheck,
   refreshLiveReadiness,
   refreshLiveShadow,
   runLivePreflight,
+  startMainnetAutoDryRun,
+  startMainnetAutoLiveBlocked,
   startLiveShadow,
+  stopMainnetAutoDryRun,
   stopLiveShadow,
   validateLiveCredential
 } from "../api/client";
@@ -164,6 +178,9 @@ describe("live access panel", () => {
     resetAppStore();
     useAppStore.getState().setSnapshot(makeBootstrapSnapshot());
     vi.mocked(listLiveCredentials).mockResolvedValue([]);
+    vi.mocked(getMainnetAutoStatus).mockResolvedValue(makeLiveStatus().mainnet_auto);
+    vi.mocked(listMainnetAutoDecisions).mockResolvedValue([]);
+    vi.mocked(getLatestMainnetAutoLessons).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -771,5 +788,83 @@ describe("live access panel", () => {
     expect(screen.getByText("MAINNET AUTO BLOCKED")).toBeTruthy();
     expect(screen.getAllByText("MAINNET CANARY DISABLED BY SERVER").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/mainnet_canary_disabled/).length).toBeGreaterThan(0);
+  });
+
+  it("renders mainnet auto dry-run and live blocked controls without implying live execution", async () => {
+    const user = userEvent.setup();
+    const autoStatus = {
+      ...makeLiveStatus().mainnet_auto,
+      state: "dry_run_running" as const,
+      last_decision_outcome: "skipped_config_blocked" as const,
+      current_blockers: ["credentials_missing"],
+      latest_lessons_recommendation: "needs_fix_before_live"
+    };
+    vi.mocked(getMainnetAutoStatus).mockResolvedValue(autoStatus);
+    vi.mocked(listMainnetAutoDecisions).mockResolvedValue([
+      {
+        id: "decision-1",
+        session_id: "session-1",
+        mode: "dry_run",
+        outcome: "skipped_config_blocked",
+        environment: "mainnet",
+        symbol: "BTCUSDT",
+        timeframe: "1m",
+        closed_candle_open_time: 1,
+        signal_id: "signal-1",
+        signal_side: "buy",
+        would_submit: false,
+        blocking_reasons: ["credentials_missing"],
+        message: "Dry-run blocked before submit.",
+        created_at: 1
+      }
+    ]);
+    vi.mocked(getLatestMainnetAutoLessons).mockResolvedValue({
+      id: "lesson-1",
+      session_id: "session-1",
+      mode: "dry_run",
+      live_order_submitted: false,
+      signals_observed: 1,
+      decisions_blocked: 1,
+      would_submit_decisions: 0,
+      duplicate_suppression_count: 0,
+      top_blockers: ["credentials_missing"],
+      recommendation: "needs_fix_before_live",
+      explanation: "No live order was submitted.",
+      lessons_path: null,
+      created_at: 1
+    });
+    vi.mocked(startMainnetAutoDryRun).mockResolvedValue(autoStatus);
+    vi.mocked(stopMainnetAutoDryRun).mockResolvedValue({ ...autoStatus, state: "stopped" });
+    vi.mocked(startMainnetAutoLiveBlocked).mockResolvedValue({
+      ...autoStatus,
+      state: "config_blocked",
+      current_blockers: ["mainnet_auto_config_disabled"]
+    });
+    vi.mocked(exportMainnetAutoEvidence).mockResolvedValue({
+      path: "artifacts/mainnet-auto/test",
+      files: ["manifest.json"],
+      final_verdict: "no_live_order_submitted",
+      live_order_submitted: false,
+      created_at: 1
+    });
+
+    renderWithClient(
+      <>
+        <LiveAccessPanel />
+        <ToastViewport />
+      </>
+    );
+
+    expect((await screen.findAllByText("MAINNET AUTO DRY-RUN RUNNING")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Live auto start is intentionally not an easy UI action; backend gates still block it by default.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("LIVE RUNNING");
+
+    await user.click(screen.getByRole("button", { name: "Verify Live Auto Blocked" }));
+    expect(startMainnetAutoLiveBlocked).toHaveBeenCalled();
+    expect(await screen.findByText(/MAINNET live auto blocked/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Export Auto Evidence" }));
+    expect(exportMainnetAutoEvidence).toHaveBeenCalled();
+    expect(await screen.findByText(/MAINNET auto evidence exported/)).toBeTruthy();
   });
 });

@@ -161,6 +161,42 @@ export type LiveOrderStatus =
   | "unknown_needs_repair";
 export type LiveAutoExecutorStateKind = "stopped" | "ready" | "running" | "blocked" | "degraded";
 export type LiveIntentLockStatus = "created" | "submitted" | "blocked" | "repaired";
+export type MainnetAutoState =
+  | "disabled"
+  | "config_blocked"
+  | "credentials_missing"
+  | "validation_missing"
+  | "readiness_blocked"
+  | "risk_profile_missing"
+  | "dry_run_ready"
+  | "dry_run_running"
+  | "armed"
+  | "live_ready"
+  | "live_running"
+  | "stopping"
+  | "stopped"
+  | "watchdog_stopped"
+  | "kill_switch_engaged"
+  | "degraded"
+  | "error";
+export type MainnetAutoRunMode = "dry_run" | "live";
+export type MainnetAutoDecisionOutcome =
+  | "signal_seen"
+  | "skipped_unfinished_candle"
+  | "skipped_duplicate"
+  | "skipped_stale_preview"
+  | "skipped_stale_reference_price"
+  | "skipped_stale_shadow"
+  | "skipped_risk_budget"
+  | "skipped_open_order"
+  | "skipped_open_position"
+  | "skipped_kill_switch"
+  | "skipped_auto_disabled"
+  | "skipped_config_blocked"
+  | "dry_run_would_submit"
+  | "live_submit_requested"
+  | "live_submit_blocked"
+  | "watchdog_stopped";
 
 export interface AppMetadata {
   app_name: string;
@@ -330,6 +366,108 @@ export interface LiveCredentialValidationResult {
   status: LiveCredentialValidationStatus;
   validated_at: number;
   message: string | null;
+}
+
+export interface MainnetAutoConfig {
+  enable_live_execution: boolean;
+  mode: MainnetAutoRunMode;
+  max_runtime_minutes: number;
+  max_orders: number;
+  max_fills: number;
+  max_notional: string;
+  max_daily_loss: string;
+  require_flat_start: boolean;
+  require_flat_stop: boolean;
+  require_manual_canary_evidence: boolean;
+  evidence_required: boolean;
+  lesson_report_required: boolean;
+}
+
+export interface MainnetAutoRiskBudget {
+  configured: boolean;
+  budget_id: string;
+  max_notional_per_order: string;
+  max_total_session_notional: string;
+  max_open_notional: string;
+  max_orders_per_session: number;
+  max_fills_per_session: number;
+  max_consecutive_losses: number;
+  max_consecutive_rejections: number;
+  max_daily_realized_loss: string;
+  max_position_age_seconds: number;
+  max_runtime_minutes: number;
+  max_leverage: string;
+  require_flat_start: boolean;
+  require_flat_stop: boolean;
+  allowed_symbols: SymbolCode[];
+  allowed_order_types: LiveOrderType[];
+  require_fresh_reference_price: boolean;
+  require_fresh_shadow: boolean;
+  require_fresh_user_data_stream: boolean;
+  require_evidence_logging: boolean;
+  require_lessons_report: boolean;
+  updated_at: number;
+}
+
+export interface MainnetAutoStatus {
+  state: MainnetAutoState;
+  mode: MainnetAutoRunMode;
+  config: MainnetAutoConfig;
+  risk_budget: MainnetAutoRiskBudget;
+  session_id: string | null;
+  started_at: number | null;
+  stopped_at: number | null;
+  last_decision_id: string | null;
+  last_decision_outcome: MainnetAutoDecisionOutcome | null;
+  last_watchdog_stop_reason: string | null;
+  blocking_reasons: string[];
+  current_blockers: string[];
+  latest_lessons_recommendation: string | null;
+  live_orders_submitted: number;
+  dry_run_orders_submitted: number;
+  evidence_path: string | null;
+  updated_at: number;
+}
+
+export interface MainnetAutoDecisionEvent {
+  id: string;
+  session_id: string;
+  mode: MainnetAutoRunMode;
+  outcome: MainnetAutoDecisionOutcome;
+  environment: LiveEnvironment;
+  symbol: SymbolCode;
+  timeframe: Timeframe;
+  closed_candle_open_time: number | null;
+  signal_id: string | null;
+  signal_side: SignalSide | null;
+  would_submit: boolean;
+  blocking_reasons: string[];
+  message: string;
+  created_at: number;
+}
+
+export interface MainnetAutoLessonReport {
+  id: string;
+  session_id: string;
+  mode: MainnetAutoRunMode;
+  live_order_submitted: boolean;
+  signals_observed: number;
+  decisions_blocked: number;
+  would_submit_decisions: number;
+  duplicate_suppression_count: number;
+  top_blockers: string[];
+  recommendation: string;
+  explanation: string;
+  lessons_path: string | null;
+  created_at: number;
+}
+
+export interface MainnetAutoEvidenceExportResult {
+  path: string;
+  files: string[];
+  final_verdict: string;
+  live_order_submitted: boolean;
+  created_at: number;
 }
 
 export interface LiveGateCheck {
@@ -742,6 +880,7 @@ export interface LiveStatusSnapshot {
   risk_profile: LiveRiskProfile;
   auto_executor: LiveAutoExecutorStatus;
   mainnet_canary: LiveMainnetCanaryStatus;
+  mainnet_auto: MainnetAutoStatus;
   updated_at: number;
 }
 

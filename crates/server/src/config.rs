@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use relxen_app::{EnvCredentialConfig, EnvCredentialPair};
+use relxen_domain::{MainnetAutoConfig, MainnetAutoRunMode};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -14,6 +15,7 @@ pub struct ServerConfig {
     pub enable_mainnet_canary_execution: bool,
     pub enable_testnet_drill_helpers: bool,
     pub env_credentials: EnvCredentialConfig,
+    pub mainnet_auto: MainnetAutoConfig,
 }
 
 impl ServerConfig {
@@ -39,6 +41,7 @@ impl ServerConfig {
             .map(|value| value.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         let env_credentials = load_env_credentials();
+        let mainnet_auto = load_mainnet_auto_config();
 
         ensure_database_parent(&database_url)?;
 
@@ -51,8 +54,53 @@ impl ServerConfig {
             enable_mainnet_canary_execution,
             enable_testnet_drill_helpers,
             env_credentials,
+            mainnet_auto,
         })
     }
+}
+
+fn load_mainnet_auto_config() -> MainnetAutoConfig {
+    MainnetAutoConfig {
+        enable_live_execution: env_bool("RELXEN_ENABLE_MAINNET_AUTO_EXECUTION", false),
+        mode: match env::var("RELXEN_MAINNET_AUTO_MODE")
+            .unwrap_or_else(|_| "dry_run".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "live" => MainnetAutoRunMode::Live,
+            _ => MainnetAutoRunMode::DryRun,
+        },
+        max_runtime_minutes: env_u64("RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES", 15),
+        max_orders: env_u64("RELXEN_MAINNET_AUTO_MAX_ORDERS", 1),
+        max_fills: env_u64("RELXEN_MAINNET_AUTO_MAX_FILLS", 1),
+        max_notional: env::var("RELXEN_MAINNET_AUTO_MAX_NOTIONAL")
+            .unwrap_or_else(|_| "80".to_string()),
+        max_daily_loss: env::var("RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS")
+            .unwrap_or_else(|_| "5".to_string()),
+        require_flat_start: env_bool("RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START", true),
+        require_flat_stop: env_bool("RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP", true),
+        require_manual_canary_evidence: env_bool(
+            "RELXEN_MAINNET_AUTO_REQUIRE_MANUAL_CANARY_EVIDENCE",
+            true,
+        ),
+        evidence_required: env_bool("RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED", true),
+        lesson_report_required: env_bool("RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED", true),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 fn load_env_credentials() -> EnvCredentialConfig {

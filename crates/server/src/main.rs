@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
             enable_mainnet_canary_execution: config.enable_mainnet_canary_execution,
             enable_testnet_drill_helpers: config.enable_testnet_drill_helpers,
             env_credentials: config.env_credentials,
+            mainnet_auto_config: config.mainnet_auto,
             ..ServiceOptions::default()
         },
     );

@@ -8,6 +8,11 @@ import type {
   LiveExecutionResult,
   LiveFillRecord,
   LiveFlattenResult,
+  MainnetAutoDecisionEvent,
+  MainnetAutoEvidenceExportResult,
+  MainnetAutoLessonReport,
+  MainnetAutoRiskBudget,
+  MainnetAutoStatus,
   LiveModePreference,
   LiveOrderRecord,
   LiveOrderPreflightResult,
@@ -221,6 +226,45 @@ export function startLiveAuto(): Promise<LiveStatusSnapshot> {
 
 export function stopLiveAuto(): Promise<LiveStatusSnapshot> {
   return request("/api/live/auto/stop", { method: "POST" });
+}
+
+export function getMainnetAutoStatus(): Promise<MainnetAutoStatus> {
+  return request("/api/live/mainnet-auto/status");
+}
+
+export function startMainnetAutoDryRun(): Promise<MainnetAutoStatus> {
+  return request("/api/live/mainnet-auto/dry-run/start", { method: "POST" });
+}
+
+export function stopMainnetAutoDryRun(): Promise<MainnetAutoStatus> {
+  return request("/api/live/mainnet-auto/dry-run/stop", { method: "POST" });
+}
+
+export function startMainnetAutoLiveBlocked(): Promise<MainnetAutoStatus> {
+  return request("/api/live/mainnet-auto/start", { method: "POST" });
+}
+
+export function getMainnetAutoRiskBudget(): Promise<MainnetAutoRiskBudget> {
+  return request("/api/live/mainnet-auto/risk-budget");
+}
+
+export function putMainnetAutoRiskBudget(payload: MainnetAutoRiskBudget): Promise<MainnetAutoRiskBudget> {
+  return request("/api/live/mainnet-auto/risk-budget", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function listMainnetAutoDecisions(limit = 10): Promise<MainnetAutoDecisionEvent[]> {
+  return request(`/api/live/mainnet-auto/decisions?limit=${limit}`);
+}
+
+export function getLatestMainnetAutoLessons(): Promise<MainnetAutoLessonReport | null> {
+  return request("/api/live/mainnet-auto/lessons/latest");
+}
+
+export function exportMainnetAutoEvidence(): Promise<MainnetAutoEvidenceExportResult> {
+  return request("/api/live/mainnet-auto/export-evidence", { method: "POST" });
 }
 
 export function engageLiveKillSwitch(reason = "operator_engaged"): Promise<LiveStatusSnapshot> {

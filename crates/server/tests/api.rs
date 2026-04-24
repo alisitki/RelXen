@@ -24,8 +24,10 @@ use relxen_domain::{
     LiveEnvironment, LiveExecutionRequest, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock,
     LiveKillSwitchState, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
     LiveOrderType, LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord,
-    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings,
-    SignalEvent, Symbol, SystemMetrics, Timeframe, Trade, Wallet,
+    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent,
+    MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget, MainnetAutoStatus,
+    MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
+    Trade, Wallet,
 };
 use relxen_infra::{EventBus, MemorySecretStore};
 use relxen_server::{build_router, RouterState};
@@ -120,6 +122,11 @@ struct InMemoryRepository {
     live_risk_profile: Mutex<Option<LiveRiskProfile>>,
     live_auto_executor: Mutex<Option<LiveAutoExecutorStatus>>,
     live_intent_locks: Mutex<Vec<LiveIntentLock>>,
+    mainnet_auto_status: Mutex<Option<MainnetAutoStatus>>,
+    mainnet_auto_risk_budget: Mutex<Option<MainnetAutoRiskBudget>>,
+    mainnet_auto_decisions: Mutex<Vec<MainnetAutoDecisionEvent>>,
+    mainnet_auto_watchdog_events: Mutex<Vec<MainnetAutoWatchdogEvent>>,
+    mainnet_auto_lessons: Mutex<Vec<MainnetAutoLessonReport>>,
     live_orders: Mutex<Vec<LiveOrderRecord>>,
     live_fills: Mutex<Vec<LiveFillRecord>>,
     fail_clear_trades: bool,
@@ -420,6 +427,100 @@ impl Repository for InMemoryRepository {
         Ok(())
     }
 
+    async fn load_mainnet_auto_status(&self) -> AppResult<MainnetAutoStatus> {
+        Ok(self
+            .mainnet_auto_status
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_status(&self, status: &MainnetAutoStatus) -> AppResult<()> {
+        *self.mainnet_auto_status.lock().await = Some(status.clone());
+        Ok(())
+    }
+
+    async fn load_mainnet_auto_risk_budget(&self) -> AppResult<MainnetAutoRiskBudget> {
+        Ok(self
+            .mainnet_auto_risk_budget
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_risk_budget(&self, budget: &MainnetAutoRiskBudget) -> AppResult<()> {
+        *self.mainnet_auto_risk_budget.lock().await = Some(budget.clone());
+        Ok(())
+    }
+
+    async fn append_mainnet_auto_decision(
+        &self,
+        decision: &MainnetAutoDecisionEvent,
+    ) -> AppResult<()> {
+        self.mainnet_auto_decisions
+            .lock()
+            .await
+            .push(decision.clone());
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_decisions(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoDecisionEvent>> {
+        let mut decisions = self.mainnet_auto_decisions.lock().await.clone();
+        decisions.sort_by_key(|decision| decision.created_at);
+        if decisions.len() > limit {
+            decisions = decisions.split_off(decisions.len() - limit);
+        }
+        Ok(decisions)
+    }
+
+    async fn append_mainnet_auto_watchdog_event(
+        &self,
+        event: &MainnetAutoWatchdogEvent,
+    ) -> AppResult<()> {
+        self.mainnet_auto_watchdog_events
+            .lock()
+            .await
+            .push(event.clone());
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_watchdog_events(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoWatchdogEvent>> {
+        let mut events = self.mainnet_auto_watchdog_events.lock().await.clone();
+        events.sort_by_key(|event| event.created_at);
+        if events.len() > limit {
+            events = events.split_off(events.len() - limit);
+        }
+        Ok(events)
+    }
+
+    async fn save_mainnet_auto_lesson_report(
+        &self,
+        report: &MainnetAutoLessonReport,
+    ) -> AppResult<()> {
+        self.mainnet_auto_lessons.lock().await.push(report.clone());
+        Ok(())
+    }
+
+    async fn latest_mainnet_auto_lesson_report(
+        &self,
+    ) -> AppResult<Option<MainnetAutoLessonReport>> {
+        Ok(self
+            .mainnet_auto_lessons
+            .lock()
+            .await
+            .iter()
+            .max_by_key(|report| report.created_at)
+            .cloned())
+    }
+
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {
         let mut orders = self.live_orders.lock().await.clone();
         orders.sort_by_key(|order| order.updated_at);
@@ -473,7 +574,10 @@ impl Repository for InMemoryRepository {
     }
 }
 
-struct ServerFakeLiveExchange;
+#[derive(Default)]
+struct ServerFakeLiveExchange {
+    submitted_orders: Mutex<Vec<LiveOrderRecord>>,
+}
 
 #[async_trait]
 impl LiveExchangePort for ServerFakeLiveExchange {
@@ -610,7 +714,7 @@ impl LiveExchangePort for ServerFakeLiveExchange {
             .get("newClientOrderId")
             .cloned()
             .unwrap_or_else(|| "server-client-order".to_string());
-        Ok(LiveOrderRecord {
+        let order = LiveOrderRecord {
             id: client_order_id.clone(),
             credential_id: None,
             environment,
@@ -645,7 +749,9 @@ impl LiveExchangePort for ServerFakeLiveExchange {
             last_error: None,
             submitted_at: now,
             updated_at: now,
-        })
+        };
+        self.submitted_orders.lock().await.push(order.clone());
+        Ok(order)
     }
 
     async fn cancel_order(
@@ -829,6 +935,44 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
     serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
 }
 
+async fn mainnet_auto_test_router() -> (axum::Router, Arc<ServerFakeLiveExchange>) {
+    let repository = Arc::new(InMemoryRepository::default());
+    repository
+        .save_settings(&Settings {
+            auto_restart_on_apply: false,
+            paper_enabled: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let exchange = Arc::new(ServerFakeLiveExchange::default());
+    let service = AppService::new_with_live(
+        AppMetadata::default(),
+        repository,
+        Arc::new(SequenceMarket::new(
+            Vec::new(),
+            vec![recent_closed_window(39, 25.0)],
+        )),
+        LiveDependencies::new(Arc::new(MemorySecretStore::default()), exchange.clone()),
+        Arc::new(StaticMetrics),
+        Arc::new(NoopPublisher),
+        ServiceOptions {
+            auto_start: false,
+            history_limit: 39,
+            ..ServiceOptions::default()
+        },
+    );
+    service.initialize().await.unwrap();
+    let router = build_router(
+        RouterState {
+            service,
+            event_bus: EventBus::new(16),
+        },
+        std::path::PathBuf::from("/Users/stk/Desktop/RelXen/web/dist"),
+    );
+    (router, exchange)
+}
+
 fn seeded_live_order(environment: LiveEnvironment, order_ref: &str) -> LiveOrderRecord {
     let now = now_ms();
     LiveOrderRecord {
@@ -887,7 +1031,7 @@ async fn router_with_seeded_cancel_order(
         )),
         LiveDependencies::new(
             Arc::new(MemorySecretStore::new()),
-            Arc::new(ServerFakeLiveExchange),
+            Arc::new(ServerFakeLiveExchange::default()),
         ),
         Arc::new(StaticMetrics),
         Arc::new(NoopPublisher),
@@ -994,7 +1138,7 @@ async fn execute_endpoint_submits_testnet_order_and_status_exposes_execution_sta
         )),
         LiveDependencies::new(
             Arc::new(MemorySecretStore::new()),
-            Arc::new(ServerFakeLiveExchange),
+            Arc::new(ServerFakeLiveExchange::default()),
         ),
         Arc::new(StaticMetrics),
         Arc::new(NoopPublisher),
@@ -1213,7 +1357,7 @@ async fn live_kill_switch_risk_profile_and_auto_endpoints_update_status() {
         )),
         LiveDependencies::new(
             Arc::new(MemorySecretStore::new()),
-            Arc::new(ServerFakeLiveExchange),
+            Arc::new(ServerFakeLiveExchange::default()),
         ),
         Arc::new(StaticMetrics),
         Arc::new(NoopPublisher),
@@ -1311,6 +1455,96 @@ async fn live_kill_switch_risk_profile_and_auto_endpoints_update_status() {
     assert_eq!(auto.status(), StatusCode::OK);
     let auto_body = response_json(auto).await;
     assert_eq!(auto_body["auto_executor"]["state"], "running");
+}
+
+#[tokio::test]
+async fn mainnet_auto_status_and_live_start_are_blocked_by_default() {
+    let (router, exchange) = mainnet_auto_test_router().await;
+
+    let status_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/live/mainnet-auto/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status = response_json(status_response).await;
+    assert_eq!(status["state"], "disabled");
+    assert_eq!(status["config"]["enable_live_execution"], false);
+
+    let start_response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/mainnet-auto/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_response.status(), StatusCode::OK);
+    let body = response_json(start_response).await;
+    assert_eq!(body["state"], "config_blocked");
+    assert!(body["current_blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "mainnet_auto_config_disabled"));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_dry_run_endpoints_record_decisions_without_orders() {
+    let (router, exchange) = mainnet_auto_test_router().await;
+
+    let start_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/live/mainnet-auto/dry-run/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_response.status(), StatusCode::OK);
+    let body = response_json(start_response).await;
+    assert_eq!(body["state"], "dry_run_running");
+    assert_eq!(body["live_orders_submitted"], 0);
+
+    let decisions_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/live/mainnet-auto/decisions?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(decisions_response.status(), StatusCode::OK);
+    let decisions = response_json(decisions_response).await;
+    assert_eq!(decisions.as_array().unwrap().len(), 1);
+    assert_eq!(decisions[0]["mode"], "dry_run");
+
+    let lessons_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/live/mainnet-auto/lessons/latest")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lessons_response.status(), StatusCode::OK);
+    let lessons = response_json(lessons_response).await;
+    assert_eq!(lessons["live_order_submitted"], false);
+    assert!(exchange.submitted_orders.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -1903,7 +2137,7 @@ async fn live_credential_api_crud_validate_readiness_and_start_blocked() {
         )),
         LiveDependencies::new(
             Arc::new(MemorySecretStore::new()),
-            Arc::new(ServerFakeLiveExchange),
+            Arc::new(ServerFakeLiveExchange::default()),
         ),
         Arc::new(StaticMetrics),
         Arc::new(NoopPublisher),
@@ -2129,7 +2363,7 @@ async fn live_secure_store_unavailable_returns_typed_error() {
         )),
         LiveDependencies::new(
             Arc::new(MemorySecretStore::unavailable()),
-            Arc::new(ServerFakeLiveExchange),
+            Arc::new(ServerFakeLiveExchange::default()),
         ),
         Arc::new(StaticMetrics),
         Arc::new(NoopPublisher),

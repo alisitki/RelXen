@@ -80,6 +80,36 @@ pub fn build_router(state: RouterState, frontend_dist: std::path::PathBuf) -> Ro
         .route("/api/live/preflights", get(list_live_preflights))
         .route("/api/live/auto/start", post(start_live_auto))
         .route("/api/live/auto/stop", post(stop_live_auto))
+        .route("/api/live/mainnet-auto/status", get(mainnet_auto_status))
+        .route(
+            "/api/live/mainnet-auto/dry-run/start",
+            post(start_mainnet_auto_dry_run),
+        )
+        .route(
+            "/api/live/mainnet-auto/dry-run/stop",
+            post(stop_mainnet_auto_dry_run),
+        )
+        .route(
+            "/api/live/mainnet-auto/start",
+            post(start_mainnet_auto_live),
+        )
+        .route("/api/live/mainnet-auto/stop", post(stop_mainnet_auto))
+        .route(
+            "/api/live/mainnet-auto/decisions",
+            get(list_mainnet_auto_decisions),
+        )
+        .route(
+            "/api/live/mainnet-auto/lessons/latest",
+            get(latest_mainnet_auto_lessons),
+        )
+        .route(
+            "/api/live/mainnet-auto/risk-budget",
+            get(get_mainnet_auto_risk_budget).put(put_mainnet_auto_risk_budget),
+        )
+        .route(
+            "/api/live/mainnet-auto/export-evidence",
+            post(export_mainnet_auto_evidence),
+        )
         .route(
             "/api/live/drill/auto/replay-latest-signal",
             post(replay_latest_auto_signal_drill),
@@ -399,6 +429,78 @@ async fn stop_live_auto(
     State(state): State<RouterState>,
 ) -> Result<Json<relxen_domain::LiveStatusSnapshot>, ApiError> {
     Ok(Json(state.service.stop_live_auto_executor().await?))
+}
+
+async fn mainnet_auto_status(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
+    Ok(Json(state.service.mainnet_auto_status().await?))
+}
+
+async fn start_mainnet_auto_dry_run(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
+    Ok(Json(state.service.start_mainnet_auto_dry_run().await?))
+}
+
+async fn stop_mainnet_auto_dry_run(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
+    Ok(Json(state.service.stop_mainnet_auto_dry_run().await?))
+}
+
+async fn start_mainnet_auto_live(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
+    Ok(Json(state.service.start_mainnet_auto_live().await?))
+}
+
+async fn stop_mainnet_auto(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoStatus>, ApiError> {
+    Ok(Json(state.service.stop_mainnet_auto().await?))
+}
+
+async fn list_mainnet_auto_decisions(
+    State(state): State<RouterState>,
+    Query(query): Query<LimitQuery>,
+) -> Result<Json<Vec<relxen_domain::MainnetAutoDecisionEvent>>, ApiError> {
+    Ok(Json(
+        state
+            .service
+            .list_mainnet_auto_decisions(query.limit.unwrap_or(100))
+            .await?,
+    ))
+}
+
+async fn latest_mainnet_auto_lessons(
+    State(state): State<RouterState>,
+) -> Result<Json<Option<relxen_domain::MainnetAutoLessonReport>>, ApiError> {
+    Ok(Json(state.service.latest_mainnet_auto_lessons().await?))
+}
+
+async fn get_mainnet_auto_risk_budget(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoRiskBudget>, ApiError> {
+    Ok(Json(state.service.mainnet_auto_risk_budget().await?))
+}
+
+async fn put_mainnet_auto_risk_budget(
+    State(state): State<RouterState>,
+    Json(payload): Json<relxen_domain::MainnetAutoRiskBudget>,
+) -> Result<Json<relxen_domain::MainnetAutoRiskBudget>, ApiError> {
+    Ok(Json(
+        state
+            .service
+            .configure_mainnet_auto_risk_budget(payload)
+            .await?,
+    ))
+}
+
+async fn export_mainnet_auto_evidence(
+    State(state): State<RouterState>,
+) -> Result<Json<relxen_domain::MainnetAutoEvidenceExportResult>, ApiError> {
+    Ok(Json(state.service.export_mainnet_auto_evidence().await?))
 }
 
 async fn replay_latest_auto_signal_drill(

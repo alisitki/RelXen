@@ -12,8 +12,10 @@ use relxen_domain::{
     LiveCredentialSource, LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionSnapshot,
     LiveFillRecord, LiveIntentLock, LiveKillSwitchState, LiveModePreference,
     LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus, LiveRiskProfile,
-    LiveStateRecord, LogEvent, Position, PositionSide, QuoteAsset, Settings, SignalEvent,
-    SignalSide, Symbol, Timeframe, Trade, TradeAction, TradeSource, Wallet,
+    LiveStateRecord, LogEvent, MainnetAutoDecisionEvent, MainnetAutoLessonReport,
+    MainnetAutoRiskBudget, MainnetAutoStatus, MainnetAutoWatchdogEvent, Position, PositionSide,
+    QuoteAsset, Settings, SignalEvent, SignalSide, Symbol, Timeframe, Trade, TradeAction,
+    TradeSource, Wallet,
 };
 
 pub struct SqliteRepository {
@@ -858,6 +860,177 @@ impl Repository for SqliteRepository {
         .await
         .context("upserting live intent lock")?;
         Ok(())
+    }
+
+    async fn load_mainnet_auto_status(&self) -> AppResult<MainnetAutoStatus> {
+        load_singleton_json(&self.pool, "mainnet_auto_state", "status_json")
+            .await
+            .map(|status| status.unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_status(&self, status: &MainnetAutoStatus) -> AppResult<()> {
+        save_singleton_json(
+            &self.pool,
+            "mainnet_auto_state",
+            "status_json",
+            status,
+            status.updated_at,
+        )
+        .await
+    }
+
+    async fn load_mainnet_auto_risk_budget(&self) -> AppResult<MainnetAutoRiskBudget> {
+        load_singleton_json(&self.pool, "mainnet_auto_risk_budget", "budget_json")
+            .await
+            .map(|budget| budget.unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_risk_budget(&self, budget: &MainnetAutoRiskBudget) -> AppResult<()> {
+        save_singleton_json(
+            &self.pool,
+            "mainnet_auto_risk_budget",
+            "budget_json",
+            budget,
+            budget.updated_at,
+        )
+        .await
+    }
+
+    async fn append_mainnet_auto_decision(
+        &self,
+        decision: &MainnetAutoDecisionEvent,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO mainnet_auto_decisions (
+              id, session_id, mode, outcome, symbol, timeframe, signal_open_time,
+              would_submit, decision_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&decision.id)
+        .bind(&decision.session_id)
+        .bind(format!("{:?}", decision.mode).to_ascii_lowercase())
+        .bind(decision.outcome.as_str())
+        .bind(decision.symbol.as_str())
+        .bind(decision.timeframe.as_str())
+        .bind(decision.closed_candle_open_time)
+        .bind(if decision.would_submit { 1_i64 } else { 0_i64 })
+        .bind(serde_json::to_string(decision).context("encoding mainnet auto decision")?)
+        .bind(decision.created_at)
+        .execute(&self.pool)
+        .await
+        .context("appending mainnet auto decision")?;
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_decisions(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoDecisionEvent>> {
+        let mut rows = sqlx::query(
+            "SELECT decision_json FROM mainnet_auto_decisions ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("listing mainnet auto decisions")?;
+        rows.reverse();
+        rows.into_iter()
+            .map(|row| {
+                serde_json::from_str::<MainnetAutoDecisionEvent>(
+                    row.get::<String, _>("decision_json").as_str(),
+                )
+                .context("decoding mainnet auto decision")
+                .map_err(AppError::from)
+            })
+            .collect()
+    }
+
+    async fn append_mainnet_auto_watchdog_event(
+        &self,
+        event: &MainnetAutoWatchdogEvent,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO mainnet_auto_watchdog_events (
+              id, session_id, reason, event_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&event.id)
+        .bind(&event.session_id)
+        .bind(event.reason.as_str())
+        .bind(serde_json::to_string(event).context("encoding mainnet auto watchdog event")?)
+        .bind(event.created_at)
+        .execute(&self.pool)
+        .await
+        .context("appending mainnet auto watchdog event")?;
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_watchdog_events(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoWatchdogEvent>> {
+        let mut rows = sqlx::query(
+            "SELECT event_json FROM mainnet_auto_watchdog_events ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("listing mainnet auto watchdog events")?;
+        rows.reverse();
+        rows.into_iter()
+            .map(|row| {
+                serde_json::from_str::<MainnetAutoWatchdogEvent>(
+                    row.get::<String, _>("event_json").as_str(),
+                )
+                .context("decoding mainnet auto watchdog event")
+                .map_err(AppError::from)
+            })
+            .collect()
+    }
+
+    async fn save_mainnet_auto_lesson_report(
+        &self,
+        report: &MainnetAutoLessonReport,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO mainnet_auto_lesson_reports (
+              id, session_id, recommendation, report_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&report.id)
+        .bind(&report.session_id)
+        .bind(&report.recommendation)
+        .bind(serde_json::to_string(report).context("encoding mainnet auto lesson report")?)
+        .bind(report.created_at)
+        .execute(&self.pool)
+        .await
+        .context("saving mainnet auto lesson report")?;
+        Ok(())
+    }
+
+    async fn latest_mainnet_auto_lesson_report(
+        &self,
+    ) -> AppResult<Option<MainnetAutoLessonReport>> {
+        sqlx::query(
+            "SELECT report_json FROM mainnet_auto_lesson_reports ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("loading latest mainnet auto lesson report")?
+        .map(|row| {
+            serde_json::from_str::<MainnetAutoLessonReport>(
+                row.get::<String, _>("report_json").as_str(),
+            )
+            .context("decoding mainnet auto lesson report")
+            .map_err(AppError::from)
+        })
+        .transpose()
     }
 
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {

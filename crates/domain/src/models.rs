@@ -422,6 +422,133 @@ pub enum LiveRuntimeState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum MainnetAutoState {
+    Disabled,
+    ConfigBlocked,
+    CredentialsMissing,
+    ValidationMissing,
+    ReadinessBlocked,
+    RiskProfileMissing,
+    DryRunReady,
+    DryRunRunning,
+    Armed,
+    LiveReady,
+    LiveRunning,
+    Stopping,
+    Stopped,
+    WatchdogStopped,
+    KillSwitchEngaged,
+    Degraded,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoRunMode {
+    DryRun,
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoStopReason {
+    KillSwitchEngaged,
+    ShadowStale,
+    UserDataStreamDown,
+    AccountSnapshotStale,
+    ReferencePriceStale,
+    RulesStale,
+    OrderReconciliationAmbiguous,
+    UnexpectedOpenOrder,
+    UnexpectedPosition,
+    MaxRuntimeReached,
+    MaxOrdersReached,
+    MaxFillsReached,
+    MaxLossReached,
+    MaxRejectionsReached,
+    DuplicateSignalDetected,
+    UnsupportedAccountMode,
+    UnsupportedMarginMode,
+    EvidenceLoggingFailed,
+    LessonReportFailed,
+    MainnetAutoConfigDisabled,
+    OperatorStop,
+}
+
+impl MainnetAutoStopReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::KillSwitchEngaged => "kill_switch_engaged",
+            Self::ShadowStale => "shadow_stale",
+            Self::UserDataStreamDown => "user_data_stream_down",
+            Self::AccountSnapshotStale => "account_snapshot_stale",
+            Self::ReferencePriceStale => "reference_price_stale",
+            Self::RulesStale => "rules_stale",
+            Self::OrderReconciliationAmbiguous => "order_reconciliation_ambiguous",
+            Self::UnexpectedOpenOrder => "unexpected_open_order",
+            Self::UnexpectedPosition => "unexpected_position",
+            Self::MaxRuntimeReached => "max_runtime_reached",
+            Self::MaxOrdersReached => "max_orders_reached",
+            Self::MaxFillsReached => "max_fills_reached",
+            Self::MaxLossReached => "max_loss_reached",
+            Self::MaxRejectionsReached => "max_rejections_reached",
+            Self::DuplicateSignalDetected => "duplicate_signal_detected",
+            Self::UnsupportedAccountMode => "unsupported_account_mode",
+            Self::UnsupportedMarginMode => "unsupported_margin_mode",
+            Self::EvidenceLoggingFailed => "evidence_logging_failed",
+            Self::LessonReportFailed => "lesson_report_failed",
+            Self::MainnetAutoConfigDisabled => "mainnet_auto_config_disabled",
+            Self::OperatorStop => "operator_stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoDecisionOutcome {
+    SignalSeen,
+    SkippedUnfinishedCandle,
+    SkippedDuplicate,
+    SkippedStalePreview,
+    SkippedStaleReferencePrice,
+    SkippedStaleShadow,
+    SkippedRiskBudget,
+    SkippedOpenOrder,
+    SkippedOpenPosition,
+    SkippedKillSwitch,
+    SkippedAutoDisabled,
+    SkippedConfigBlocked,
+    DryRunWouldSubmit,
+    LiveSubmitRequested,
+    LiveSubmitBlocked,
+    WatchdogStopped,
+}
+
+impl MainnetAutoDecisionOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignalSeen => "signal_seen",
+            Self::SkippedUnfinishedCandle => "skipped_unfinished_candle",
+            Self::SkippedDuplicate => "skipped_duplicate",
+            Self::SkippedStalePreview => "skipped_stale_preview",
+            Self::SkippedStaleReferencePrice => "skipped_stale_reference_price",
+            Self::SkippedStaleShadow => "skipped_stale_shadow",
+            Self::SkippedRiskBudget => "skipped_risk_budget",
+            Self::SkippedOpenOrder => "skipped_open_order",
+            Self::SkippedOpenPosition => "skipped_open_position",
+            Self::SkippedKillSwitch => "skipped_kill_switch",
+            Self::SkippedAutoDisabled => "skipped_auto_disabled",
+            Self::SkippedConfigBlocked => "skipped_config_blocked",
+            Self::DryRunWouldSubmit => "dry_run_would_submit",
+            Self::LiveSubmitRequested => "live_submit_requested",
+            Self::LiveSubmitBlocked => "live_submit_blocked",
+            Self::WatchdogStopped => "watchdog_stopped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LiveBlockingReason {
     NoActiveCredential,
     EnvCredentialsMissing,
@@ -1340,6 +1467,228 @@ pub struct LiveAutoExecutorRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoConfig {
+    pub enable_live_execution: bool,
+    pub mode: MainnetAutoRunMode,
+    pub max_runtime_minutes: u64,
+    pub max_orders: u64,
+    pub max_fills: u64,
+    pub max_notional: String,
+    pub max_daily_loss: String,
+    pub require_flat_start: bool,
+    pub require_flat_stop: bool,
+    pub require_manual_canary_evidence: bool,
+    pub evidence_required: bool,
+    pub lesson_report_required: bool,
+}
+
+impl Default for MainnetAutoConfig {
+    fn default() -> Self {
+        Self {
+            enable_live_execution: false,
+            mode: MainnetAutoRunMode::DryRun,
+            max_runtime_minutes: 15,
+            max_orders: 1,
+            max_fills: 1,
+            max_notional: "80".to_string(),
+            max_daily_loss: "5".to_string(),
+            require_flat_start: true,
+            require_flat_stop: true,
+            require_manual_canary_evidence: true,
+            evidence_required: true,
+            lesson_report_required: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoRiskBudget {
+    pub configured: bool,
+    pub budget_id: String,
+    pub max_notional_per_order: String,
+    pub max_total_session_notional: String,
+    pub max_open_notional: String,
+    pub max_orders_per_session: u64,
+    pub max_fills_per_session: u64,
+    pub max_consecutive_losses: u64,
+    pub max_consecutive_rejections: u64,
+    pub max_daily_realized_loss: String,
+    pub max_position_age_seconds: u64,
+    pub max_runtime_minutes: u64,
+    pub max_leverage: String,
+    pub require_flat_start: bool,
+    pub require_flat_stop: bool,
+    pub allowed_symbols: Vec<Symbol>,
+    pub allowed_order_types: Vec<LiveOrderType>,
+    pub require_fresh_reference_price: bool,
+    pub require_fresh_shadow: bool,
+    pub require_fresh_user_data_stream: bool,
+    pub require_evidence_logging: bool,
+    pub require_lessons_report: bool,
+    pub updated_at: i64,
+}
+
+impl Default for MainnetAutoRiskBudget {
+    fn default() -> Self {
+        Self {
+            configured: true,
+            budget_id: "mainnet-auto-dry-run-default".to_string(),
+            max_notional_per_order: "80".to_string(),
+            max_total_session_notional: "80".to_string(),
+            max_open_notional: "80".to_string(),
+            max_orders_per_session: 1,
+            max_fills_per_session: 1,
+            max_consecutive_losses: 1,
+            max_consecutive_rejections: 1,
+            max_daily_realized_loss: "5".to_string(),
+            max_position_age_seconds: 300,
+            max_runtime_minutes: 15,
+            max_leverage: "5".to_string(),
+            require_flat_start: true,
+            require_flat_stop: true,
+            allowed_symbols: vec![Symbol::BtcUsdt],
+            allowed_order_types: vec![LiveOrderType::Limit],
+            require_fresh_reference_price: true,
+            require_fresh_shadow: true,
+            require_fresh_user_data_stream: true,
+            require_evidence_logging: true,
+            require_lessons_report: true,
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoWatchdogStatus {
+    pub running: bool,
+    pub last_check_at: Option<i64>,
+    pub last_stop_reason: Option<MainnetAutoStopReason>,
+    pub last_message: Option<String>,
+}
+
+impl Default for MainnetAutoWatchdogStatus {
+    fn default() -> Self {
+        Self {
+            running: false,
+            last_check_at: None,
+            last_stop_reason: None,
+            last_message: Some("Mainnet auto watchdog is idle.".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoStatus {
+    pub state: MainnetAutoState,
+    pub mode: MainnetAutoRunMode,
+    pub config: MainnetAutoConfig,
+    pub risk_budget: MainnetAutoRiskBudget,
+    pub session_id: Option<String>,
+    pub started_at: Option<i64>,
+    pub stopped_at: Option<i64>,
+    pub last_decision_id: Option<String>,
+    pub last_decision_outcome: Option<MainnetAutoDecisionOutcome>,
+    pub last_watchdog_stop_reason: Option<MainnetAutoStopReason>,
+    pub blocking_reasons: Vec<String>,
+    pub current_blockers: Vec<String>,
+    pub latest_lessons_recommendation: Option<String>,
+    pub live_orders_submitted: u64,
+    pub dry_run_orders_submitted: u64,
+    pub evidence_path: Option<String>,
+    pub updated_at: i64,
+}
+
+impl Default for MainnetAutoStatus {
+    fn default() -> Self {
+        let config = MainnetAutoConfig::default();
+        Self {
+            state: MainnetAutoState::Disabled,
+            mode: config.mode,
+            config,
+            risk_budget: MainnetAutoRiskBudget::default(),
+            session_id: None,
+            started_at: None,
+            stopped_at: None,
+            last_decision_id: None,
+            last_decision_outcome: None,
+            last_watchdog_stop_reason: None,
+            blocking_reasons: vec!["mainnet_auto_config_disabled".to_string()],
+            current_blockers: vec!["mainnet_auto_config_disabled".to_string()],
+            latest_lessons_recommendation: Some("live_not_allowed".to_string()),
+            live_orders_submitted: 0,
+            dry_run_orders_submitted: 0,
+            evidence_path: None,
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoDecisionEvent {
+    pub id: String,
+    pub session_id: String,
+    pub mode: MainnetAutoRunMode,
+    pub outcome: MainnetAutoDecisionOutcome,
+    pub environment: LiveEnvironment,
+    pub symbol: Symbol,
+    pub timeframe: Timeframe,
+    pub closed_candle_open_time: Option<i64>,
+    pub signal_id: Option<String>,
+    pub signal_side: Option<SignalSide>,
+    pub strategy_id: String,
+    pub aso_settings_snapshot: BTreeMap<String, String>,
+    pub risk_budget_snapshot_id: String,
+    pub reference_price_source: Option<String>,
+    pub reference_price_age_ms: Option<i64>,
+    pub intent_hash: Option<String>,
+    pub would_submit: bool,
+    pub blocking_reasons: Vec<String>,
+    pub message: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoWatchdogEvent {
+    pub id: String,
+    pub session_id: String,
+    pub reason: MainnetAutoStopReason,
+    pub message: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoLessonReport {
+    pub id: String,
+    pub session_id: String,
+    pub mode: MainnetAutoRunMode,
+    pub live_order_submitted: bool,
+    pub signals_observed: u64,
+    pub decisions_blocked: u64,
+    pub would_submit_decisions: u64,
+    pub duplicate_suppression_count: u64,
+    pub top_blockers: Vec<String>,
+    pub watchdog_stop_reason: Option<MainnetAutoStopReason>,
+    pub risk_budget_utilization: BTreeMap<String, String>,
+    pub reference_price_freshness_summary: String,
+    pub aso_signal_summary: String,
+    pub stale_or_degraded_state: Vec<String>,
+    pub next_checks: Vec<String>,
+    pub recommendation: String,
+    pub explanation: String,
+    pub lessons_path: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MainnetAutoEvidenceExportResult {
+    pub path: String,
+    pub files: Vec<String>,
+    pub final_verdict: String,
+    pub live_order_submitted: bool,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveOrderPreflightResult {
     pub id: String,
     pub credential_id: Option<LiveCredentialId>,
@@ -1410,6 +1759,7 @@ pub struct LiveStatusSnapshot {
     pub risk_profile: LiveRiskProfile,
     pub auto_executor: LiveAutoExecutorStatus,
     pub mainnet_canary: LiveMainnetCanaryStatus,
+    pub mainnet_auto: MainnetAutoStatus,
     pub updated_at: i64,
 }
 
@@ -1439,6 +1789,7 @@ impl Default for LiveStatusSnapshot {
             risk_profile: LiveRiskProfile::default(),
             auto_executor: LiveAutoExecutorStatus::default(),
             mainnet_canary: LiveMainnetCanaryStatus::default(),
+            mainnet_auto: MainnetAutoStatus::default(),
             updated_at: 0,
         }
     }

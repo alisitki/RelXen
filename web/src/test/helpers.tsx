@@ -225,6 +225,62 @@ export function makeLiveStatus(overrides: LiveStatusOverrides = {}): LiveStatusS
       blocking_reasons: ["mainnet_canary_disabled"],
       updated_at: 1
     },
+    mainnet_auto: {
+      state: "disabled",
+      mode: "dry_run",
+      config: {
+        enable_live_execution: false,
+        mode: "dry_run",
+        max_runtime_minutes: 15,
+        max_orders: 1,
+        max_fills: 1,
+        max_notional: "80",
+        max_daily_loss: "5",
+        require_flat_start: true,
+        require_flat_stop: true,
+        require_manual_canary_evidence: true,
+        evidence_required: true,
+        lesson_report_required: true
+      },
+      risk_budget: {
+        configured: true,
+        budget_id: "mainnet-auto-dry-run-default",
+        max_notional_per_order: "80",
+        max_total_session_notional: "80",
+        max_open_notional: "80",
+        max_orders_per_session: 1,
+        max_fills_per_session: 1,
+        max_consecutive_losses: 1,
+        max_consecutive_rejections: 1,
+        max_daily_realized_loss: "5",
+        max_position_age_seconds: 300,
+        max_runtime_minutes: 15,
+        max_leverage: "5",
+        require_flat_start: true,
+        require_flat_stop: true,
+        allowed_symbols: ["BTCUSDT"],
+        allowed_order_types: ["LIMIT"],
+        require_fresh_reference_price: true,
+        require_fresh_shadow: true,
+        require_fresh_user_data_stream: true,
+        require_evidence_logging: true,
+        require_lessons_report: true,
+        updated_at: 1
+      },
+      session_id: null,
+      started_at: null,
+      stopped_at: null,
+      last_decision_id: null,
+      last_decision_outcome: null,
+      last_watchdog_stop_reason: null,
+      blocking_reasons: ["mainnet_auto_config_disabled"],
+      current_blockers: ["mainnet_auto_config_disabled"],
+      latest_lessons_recommendation: "live_not_allowed",
+      live_orders_submitted: 0,
+      dry_run_orders_submitted: 0,
+      evidence_path: null,
+      updated_at: 1
+    },
     updated_at: 1
   };
 
@@ -266,6 +322,18 @@ export function makeLiveStatus(overrides: LiveStatusOverrides = {}): LiveStatusS
     mainnet_canary: {
       ...status.mainnet_canary,
       ...overrides.mainnet_canary
+    },
+    mainnet_auto: {
+      ...status.mainnet_auto,
+      ...overrides.mainnet_auto,
+      config: {
+        ...status.mainnet_auto.config,
+        ...overrides.mainnet_auto?.config
+      },
+      risk_budget: {
+        ...status.mainnet_auto.risk_budget,
+        ...overrides.mainnet_auto?.risk_budget
+      }
     }
   };
 }

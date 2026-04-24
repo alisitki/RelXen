@@ -12,7 +12,7 @@ The first MAINNET canary submitted one `BTCUSDT SELL LIMIT 0.001 @ 77950`, cance
 
 The second canary exposed a cancel payload ergonomics issue. That issue is fixed: `POST /api/live/orders/:order_ref/cancel` now uses the path `order_ref` as authoritative, does not require body `order_ref`, accepts a matching optional body `order_ref`, and rejects a mismatch.
 
-The dashboard RC UI has also been cleaned for review: the top safety strip makes `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED`, kill-switch state, active symbol, current state, and position state visible without opening advanced details.
+The dashboard RC UI has also been cleaned for review: the top safety strip makes `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED`, kill-switch state, active symbol, current state, and position state visible without opening advanced details. MAINNET auto dry-run infrastructure now exists for status, decisions, evidence, and lessons, but live MAINNET auto remains disabled by default.
 
 ## What Is Safe To Run
 
@@ -36,18 +36,39 @@ curl http://localhost:3000/api/live/status
 curl http://localhost:3000/api/live/credentials
 curl http://localhost:3000/api/live/orders
 curl http://localhost:3000/api/live/fills
+curl http://localhost:3000/api/live/mainnet-auto/status
 ```
 
 TESTNET execution remains available only through explicit operator confirmation and normal fail-closed gates. MAINNET canary execution remains disabled unless the explicit server-side canary flag is enabled for a separate canary session.
 
 ## What Is Not Enabled
 
-- MAINNET auto-execution is not implemented and must remain blocked.
+- MAINNET auto live execution must remain blocked unless a later explicit live-auto task enables it. Current safe use is dry-run only.
 - Broad MAINNET operation is not enabled.
 - Conditional/algo orders are not supported.
 - Symbol scope is still `BTCUSDT` / `BTCUSDC`.
 - Liquidation heatmap/liquidation context is deferred and must not become a live decision layer.
 - `.env` is local operator convenience, not production-grade secret storage.
+
+## MAINNET Auto Dry-Run
+
+MAINNET auto dry-run is the only supported mainnet-auto mode in the current handoff. It can record decision and risk/evidence context without submitting orders:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/run_mainnet_auto_dry_run.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/export_mainnet_auto_evidence.sh
+```
+
+Expected dry-run truth:
+
+- `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`
+- mode is `dry_run`
+- no call to the Binance new-order endpoint
+- exported `orders.json` and `fills.json` are empty
+- `lessons.md` / `lessons.json` are analysis only and do not change settings
+
+Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected/validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded `dry_run_would_submit`, verified live start remained config-blocked, and submitted no order. Treat this as readiness evidence for a future plan only, not live-auto approval.
 
 ## Safe Startup Checklist
 

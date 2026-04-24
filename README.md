@@ -2,7 +2,7 @@
 
 RelXen is a clean-room ASO-based Binance Futures trading dashboard. It is a local single-user app with a Rust backend, SQLite persistence, masked live credential metadata, live shadow/preflight foundations, a constrained Binance USDⓈ-M Futures executor, and a lightweight React dashboard served statically by the backend.
 
-Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, optional local `.env` credential loading, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` non-marketable `LIMIT` canary submitted, canceled, reconciled, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. A later second-canary readiness dry-run built a fresh non-marketable preview without submitting an order under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`, then a second bounded MAINNET `BTCUSDT` canary submitted and canceled under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. The follow-up cancel endpoint ergonomics fix makes the route path `order_ref` sufficient for `POST /api/live/orders/:order_ref/cancel` while preserving exact confirmation gates. MAINNET execution is still disabled by default and MAINNET auto-execution is not implemented.
+Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now include credential metadata, OS secure storage, optional local `.env` credential loading, Binance read-only validation, account snapshots, symbol rules, user-data-stream shadow reconciliation, precision-aware order intents, testnet `order/test` preflight validation, constrained TESTNET `MARKET` / `LIMIT` placement/cancel/flatten, closed-candle TESTNET auto-execution, kill switch controls, and manual MAINNET canary execution behind an explicit server-side canary gate. A real TESTNET soak run was completed on 2026-04-23. On 2026-04-24, reference-price freshness was hardened and one guarded MAINNET `BTCUSDT` non-marketable `LIMIT` canary submitted, canceled, reconciled, and restart-repair checked under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`. A later second-canary readiness dry-run built a fresh non-marketable preview without submitting an order under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`, then a second bounded MAINNET `BTCUSDT` canary submitted and canceled under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. The follow-up cancel endpoint ergonomics fix makes the route path `order_ref` sufficient for `POST /api/live/orders/:order_ref/cancel` while preserving exact confirmation gates. MAINNET auto infrastructure now exists for default-off status, dry-run decisions, risk budget, watchdog state, evidence export, and lesson reports. The first credential-selected operator-DB dry-run is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`; it recorded a would-submit dry-run decision and submitted no order. Live MAINNET auto execution remains disabled by default.
 
 The RC dashboard has been cleaned up for operator/friend review with a top safety summary and clearer LIVE ACCESS sections. This UI pass did not add trading behavior or submit any order.
 
@@ -40,6 +40,8 @@ The RC dashboard has been cleaned up for operator/friend review with a top safet
 - Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Current project memory: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)
 - Post-v1 live readiness entrypoint: [docs/LIVE_READINESS.md](docs/LIVE_READINESS.md)
+- Mainnet auto dry-run runbook: [docs/MAINNET_AUTO_RUNBOOK.md](docs/MAINNET_AUTO_RUNBOOK.md)
+- Mainnet auto lessons guide: [docs/MAINNET_AUTO_LESSONS_GUIDE.md](docs/MAINNET_AUTO_LESSONS_GUIDE.md)
 
 ## Live Readiness Docs
 
@@ -107,6 +109,10 @@ Defaults are documented in `.env.example`.
 - `RELXEN_CREDENTIAL_SOURCE`: set to `env` to load local operator credentials from `.env`. This setting is authoritative.
 - `RELXEN_ENABLE_ENV_CREDENTIALS`: compatibility alias; `true` enables env credentials only when `RELXEN_CREDENTIAL_SOURCE` is unset.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables manual MAINNET canary submission path when every other gate passes, default `false`.
+- `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION`: enables live MAINNET auto only when a later explicit live-run batch also arms and starts it; default `false`.
+- `RELXEN_MAINNET_AUTO_MODE`: mainnet-auto run mode, default `dry_run`. Dry-run records decisions and evidence but never submits orders.
+- `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES`, `RELXEN_MAINNET_AUTO_MAX_ORDERS`, `RELXEN_MAINNET_AUTO_MAX_FILLS`, `RELXEN_MAINNET_AUTO_MAX_NOTIONAL`, `RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS`: typed mainnet-auto session budget inputs.
+- `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START`, `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP`, `RELXEN_MAINNET_AUTO_REQUIRE_MANUAL_CANARY_EVIDENCE`, `RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED`, `RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED`: fail-closed mainnet-auto safety requirements.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for bounded soak validation, default `false`.
 - `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: optional env credential values when env source is enabled. `.env.example` contains placeholders only; never commit `.env`.
 
@@ -144,6 +150,8 @@ cargo build --workspace --release
 - `kill_switch_engaged`: new live submissions are blocked immediately.
 - `mainnet_canary_ready`: the server canary flag, risk profile, arming, preview, shadow, rules, account, and confirmation gates can allow a manual MAINNET canary action.
 - `mainnet_manual_execution_enabled`: exact operator confirmation for the current MAINNET preview is available; MAINNET auto remains unavailable.
+- `dry_run_running`: MAINNET auto dry-run is recording decision/evidence events without submitting orders.
+- `watchdog_stopped`: MAINNET auto has stopped with a persisted watchdog/operator reason.
 - `testnet_submit_pending`: a TESTNET order was submitted and final lifecycle is waiting on exchange reconciliation.
 - `testnet_order_open`: the exchange reports a working TESTNET order.
 - `testnet_partially_filled` / `testnet_filled`: fills were recorded from authoritative exchange updates.
@@ -157,7 +165,7 @@ Critical UI meaning is also represented textually, for example `▲ LONG`, `▼ 
 
 - Broad MAINNET enablement beyond the explicit manual canary gate.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
-- MAINNET auto-execution.
+- Live MAINNET auto-execution. Dry-run infrastructure exists, but live mode remains default-off and requires a separate explicit live-run task.
 - Broader incident automation beyond the documented soak evidence workflow.
 - Liquidation heatmap/liquidation-context module; ASO remains the active strategy signal and no new live decision layer is added in the post-canary safety-hardening flow.
 - Tauri packaging.

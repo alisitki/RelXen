@@ -93,7 +93,7 @@ On 2026-04-24, env-backed TESTNET credentials were loaded from local `.env`, sel
 
 ## Current Mainnet Canary Recommendation
 
-GO for the bounded manual MAINNET canary path that was exercised on 2026-04-24. Broader mainnet operation and MAINNET auto remain out of scope.
+GO for the bounded manual MAINNET canary path that was exercised on 2026-04-24. Broader mainnet operation remains out of scope. MAINNET auto now has dry-run/status/evidence infrastructure, but live MAINNET auto remains disabled by default and requires a separate explicit live-run task.
 
 Rationale:
 
@@ -101,7 +101,7 @@ Rationale:
 - Env-backed TESTNET credential validation now exists without OS secure-storage prompts.
 - A guarded MAINNET canary retry on 2026-04-24 hardened reference-price freshness, forced a fresh REST mark-price-backed final preview after the kill-switch drill, submitted one non-marketable `BTCUSDT` `LIMIT` canary, canceled it, reconciled flat with no fill, passed restart repair, and disabled the canary flag afterward. Evidence: `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 - Mainnet remains default-off and no hidden bypass was used.
-- MAINNET auto remains blocked.
+- MAINNET auto live execution remains blocked; use dry-run evidence only until a separate explicit live task.
 
 ## Exact Preconditions For Safe Manual MAINNET Canary
 

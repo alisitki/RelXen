@@ -135,3 +135,7 @@ Liquidation heatmap or liquidation-context work is intentionally deferred after 
 ### Operational evidence remains ignored local artifact data by default
 
 TESTNET soak and MAINNET canary bundles under `artifacts/testnet-soak/` and `artifacts/mainnet-canary/` are local operational evidence and remain ignored by default. Release-candidate commits should carry durable docs and summaries, not raw artifact bundles, unless a future task explicitly curates and secret-scans a bundle for publication. Historical evidence should not be rewritten to hide real failures; reports must preserve truthful outcomes such as the second canary's failed first cancel attempt followed by a successful retry.
+
+### Mainnet auto infrastructure is dry-run first and lesson reports are analysis only
+
+RelXen may expose MAINNET auto state, risk-budget, dry-run, decision-journal, watchdog, evidence, and lesson-report infrastructure before live MAINNET auto execution is authorized. The default config keeps `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false` and `RELXEN_MAINNET_AUTO_MODE=dry_run`; dry-run records would-submit/blocker decisions but must not call the exchange order endpoint. Lesson reports are operator review artifacts only: they must not automatically change strategy settings, risk budget, symbol scope, or live enablement. Any real MAINNET auto trial requires a later explicit live-run batch with fresh gates.

@@ -283,7 +283,7 @@ Non-goals: No broader mainnet enablement, no MAINNET auto-execution, no conditio
 
 Follow-up completed: The cancel endpoint body ergonomics issue is fixed. The first cancel request in the second canary had the order reference in the route path and exact confirmation text in the body, but the body omitted `order_ref`; the route treated it as absent and returned `mainnet_confirmation_missing`. Retrying with `order_ref` duplicated in the body canceled successfully. `POST /api/live/orders/:order_ref/cancel` now uses the path as authoritative, accepts omitted or matching optional body `order_ref`, rejects mismatches, and keeps confirmation gates intact.
 
-## Phase 4E — Mainnet Canary Closure And Operator Handoff Slice (Current)
+## Phase 4E — Mainnet Canary Closure And Operator Handoff Slice (Complete)
 
 Goal: Close the current mainnet-canary phase without submitting any new order, align final status docs, audit the major evidence bundles, and provide an operator handoff.
 
@@ -302,7 +302,46 @@ Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=fals
 
 ## Smallest Safe Next Implementation Batch
 
-Use `docs/OPERATOR_HANDOFF.md` for normal safe startup/review. If another canary is ever explicitly requested, run a fresh dry-run checklist first and keep the canary flag disabled until a separate execution task.
+## Phase 5 — Mainnet Auto Infrastructure And Dry-Run Slice (Current)
+
+Goal: Prepare MAINNET auto for a future controlled live trial without starting live auto or submitting any order.
+
+Status: Implemented as infrastructure and exercised in dry-run on the operator DB. RelXen has typed mainnet-auto config gates, persisted risk budget/state/decision/watchdog/lesson metadata, headless status and dry-run APIs, live-start fail-closed blocking, evidence export, and lesson report generation. Dry-run mode records ASO closed-candle decision outcomes, blockers, risk budget, reference price context, watchdog state, and lessons under `artifacts/mainnet-auto/<timestamp>/`. The operator-DB dry-run evidence is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`; it recorded `dry_run_would_submit`, empty `orders.json` / `fills.json`, and blocked live start.
+
+Non-goals: No live MAINNET auto run, no TESTNET or MAINNET order submission, no conditional/algo orders, no heatmap/liquidation module, no new strategy indicator, no symbol-scope widening.
+
+Likely files/modules touched:
+
+- `crates/domain`: mainnet-auto state/config/risk/decision/watchdog/lesson models.
+- `crates/app`: dry-run supervisor, fail-closed live-start gate, evidence and lesson generation.
+- `crates/infra`: SQLite persistence for non-secret mainnet-auto metadata.
+- `crates/server`: mainnet-auto status/dry-run/live-block/risk/decision/lesson/evidence APIs and config parsing.
+- `web`: compact mainnet-auto status surface and dry-run controls.
+- `scripts`: headless dry-run/status/evidence helpers.
+- `docs`: runbook, lessons guide, project state, and safety docs.
+
+Tests required:
+
+- MAINNET auto disabled by default.
+- Live start blocked without explicit config and gates.
+- Dry-run starts/stops and records decisions without invoking order submission.
+- Duplicate closed-candle signals are suppressed from persisted decision history.
+- Risk-budget/status/decision/lesson/evidence APIs return typed state.
+- Frontend shows MAINNET auto blocked/dry-run state without implying live execution.
+- Script syntax and full existing gate remain green.
+
+Exit criteria:
+
+- Mainnet auto live mode remains default-off.
+- Dry-run evidence and lessons can be exported.
+- No live order is submitted.
+- Existing TESTNET/manual MAINNET canary behavior remains intact.
+
+Rollback/fail-closed behavior: Set `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`, stop dry-run, engage kill switch if a live session is otherwise active, and inspect status/evidence before any future live attempt.
+
+## Smallest Safe Next Implementation Batch
+
+Review `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/` and prepare a separate explicit live-auto plan only if the operator wants to continue. If a future live trial is ever requested, it must be a separate explicit batch with fresh gates and evidence review.
 
 ## What Not To Do Next
 

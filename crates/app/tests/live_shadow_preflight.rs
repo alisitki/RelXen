@@ -9,7 +9,8 @@ use relxen_domain::{
     LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveFillRecord,
     LiveKillSwitchRequest, LiveOrderSide, LiveOrderStatus, LiveOrderType, LiveRiskLimits,
     LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
-    LiveShadowStreamState, LiveUserDataEvent, Settings, Symbol, Timeframe,
+    LiveShadowStreamState, LiveUserDataEvent, MainnetAutoDecisionOutcome, MainnetAutoState,
+    Settings, Symbol, Timeframe,
 };
 use rust_decimal::Decimal;
 
@@ -1118,6 +1119,88 @@ async fn testnet_auto_drill_helper_replays_latest_signal_once_and_suppresses_dup
 
     let resubmitted = exchange.submitted_orders.lock().await.clone();
     assert_eq!(resubmitted.len(), 1);
+}
+
+#[tokio::test]
+async fn mainnet_auto_is_disabled_by_default_and_live_start_blocks() {
+    let exchange = arc(FakeLiveExchange::default());
+    let service =
+        live_shadow_service_with(exchange.clone(), Vec::new(), ServiceOptions::default()).await;
+
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.state, MainnetAutoState::Disabled);
+    assert!(!status.config.enable_live_execution);
+    assert!(status
+        .current_blockers
+        .contains(&"mainnet_auto_config_disabled".to_string()));
+
+    let blocked = service.start_mainnet_auto_live().await.unwrap();
+    assert_eq!(blocked.state, MainnetAutoState::ConfigBlocked);
+    assert_eq!(blocked.live_orders_submitted, 0);
+    assert!(blocked
+        .current_blockers
+        .contains(&"mainnet_auto_config_disabled".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_dry_run_records_decision_without_order_submission() {
+    let exchange = arc(FakeLiveExchange::default());
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service = live_shadow_service_with(
+        exchange.clone(),
+        vec![vec![Ok(event)]],
+        ServiceOptions::default(),
+    )
+    .await;
+    service.start_runtime().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if !service.list_signals(1).await.unwrap().is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for a closed-candle signal before mainnet auto dry-run");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    service.stop_runtime().await.unwrap();
+
+    let status = service.start_mainnet_auto_dry_run().await.unwrap();
+    assert_eq!(status.state, MainnetAutoState::DryRunRunning);
+    assert_eq!(status.live_orders_submitted, 0);
+    assert_eq!(status.dry_run_orders_submitted, 0);
+    assert!(matches!(
+        status.last_decision_outcome,
+        Some(MainnetAutoDecisionOutcome::SkippedConfigBlocked)
+            | Some(MainnetAutoDecisionOutcome::SkippedStaleReferencePrice)
+            | Some(MainnetAutoDecisionOutcome::DryRunWouldSubmit)
+    ));
+    let decisions = service.list_mainnet_auto_decisions(10).await.unwrap();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].mode, relxen_domain::MainnetAutoRunMode::DryRun);
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+    let lessons = service.latest_mainnet_auto_lessons().await.unwrap();
+    assert!(lessons.is_some());
+    assert!(!lessons.unwrap().live_order_submitted);
+
+    let duplicate_status = service.start_mainnet_auto_dry_run().await.unwrap();
+    assert_eq!(
+        duplicate_status.last_decision_outcome,
+        Some(MainnetAutoDecisionOutcome::SkippedDuplicate)
+    );
+    let decisions = service.list_mainnet_auto_decisions(10).await.unwrap();
+    assert_eq!(decisions.len(), 2);
+    assert!(decisions[0]
+        .blocking_reasons
+        .iter()
+        .chain(decisions[1].blocking_reasons.iter())
+        .any(|reason| reason == "duplicate_signal_detected"));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
 }
 
 #[tokio::test]

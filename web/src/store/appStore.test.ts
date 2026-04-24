@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { BootstrapPayload, Trade } from "../types";
+import { makeLiveStatus } from "../test/helpers";
 import { useAppStore } from "./appStore";
 
 const baseSnapshot: BootstrapPayload = {
@@ -168,6 +169,7 @@ const baseSnapshot: BootstrapPayload = {
       blocking_reasons: ["mainnet_canary_disabled"],
       updated_at: 1
     },
+    mainnet_auto: makeLiveStatus().mainnet_auto,
     updated_at: 1
   },
   system_metrics: {

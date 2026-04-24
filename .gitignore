@@ -6,3 +6,4 @@
 /.env
 /artifacts/testnet-soak
 /artifacts/mainnet-canary
+/artifacts/mainnet-auto

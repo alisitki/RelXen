@@ -14,6 +14,7 @@ export function SafetyStatusBar() {
   const liveMode = liveStatus ? liveModeLabel(liveStatus) : "PAPER MODE";
   const mode = liveStatus?.mode_preference === "live_read_only" ? "LIVE READ-ONLY" : "PAPER MODE";
   const canary = liveStatus ? canaryLabel(liveStatus) : "MAINNET CANARY: DISABLED";
+  const mainnetAuto = liveStatus ? mainnetAutoLabel(liveStatus) : "MAINNET AUTO: BLOCKED";
   const killSwitch = liveStatus?.kill_switch.engaged ? "KILL SWITCH: ENGAGED" : "KILL SWITCH: RELEASED";
   const position = currentPosition ? `PAPER POSITION: ${currentPosition.side.toUpperCase()}` : "PAPER POSITION: FLAT";
 
@@ -21,7 +22,7 @@ export function SafetyStatusBar() {
     <section className="safety-status" aria-label="Safety status summary">
       <StatusTile label="Mode" value={mode} tone="neutral" />
       <StatusTile label="Live Scope" value={liveMode} tone={liveMode.includes("MAINNET") ? "warning" : "safe"} />
-      <StatusTile label="Mainnet Auto" value="MAINNET AUTO: BLOCKED" tone="safe" />
+      <StatusTile label="Mainnet Auto" value={mainnetAuto} tone={mainnetAuto.includes("LIVE RUNNING") ? "danger" : mainnetAuto.includes("DRY-RUN") ? "warning" : "safe"} />
       <StatusTile label="Mainnet Canary" value={canary} tone={canary.includes("ENABLED") ? "warning" : "safe"} />
       <StatusTile label="Kill Switch" value={killSwitch} tone={liveStatus?.kill_switch.engaged ? "danger" : "safe"} />
       <StatusTile label="Active Symbol" value={activeSymbol ?? settings?.active_symbol ?? "UNKNOWN"} tone="neutral" />
@@ -29,6 +30,25 @@ export function SafetyStatusBar() {
       <StatusTile label="Position" value={position} tone={currentPosition ? "warning" : "safe"} />
     </section>
   );
+}
+
+function mainnetAutoLabel(status: LiveStatusSnapshot): string {
+  if (!status.mainnet_auto) {
+    return "MAINNET AUTO: BLOCKED";
+  }
+  if (status.mainnet_auto.state === "dry_run_running") {
+    return "MAINNET AUTO: DRY-RUN";
+  }
+  if (status.mainnet_auto.state === "watchdog_stopped") {
+    return "MAINNET AUTO: WATCHDOG STOPPED";
+  }
+  if (status.mainnet_auto.state === "live_running") {
+    return "MAINNET AUTO: LIVE RUNNING";
+  }
+  if (!status.mainnet_auto.config.enable_live_execution) {
+    return "MAINNET AUTO: BLOCKED";
+  }
+  return `MAINNET AUTO: ${status.mainnet_auto.state.replaceAll("_", " ").toUpperCase()}`;
 }
 
 function StatusTile({ label, value, tone }: { label: string; value: string; tone: "safe" | "warning" | "danger" | "neutral" }) {

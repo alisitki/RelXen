@@ -6,7 +6,7 @@ RelXen is at release-candidate cleanup status as of 2026-04-24.
 
 Paper Mode V1 is complete. Real TESTNET execution has been validated. Two bounded manual MAINNET canaries have been completed and reconciled flat. The cancel endpoint ergonomics issue found during the second canary has been fixed. No order was submitted during this release-candidate cleanup pass.
 
-MAINNET auto-execution remains unavailable. Broader MAINNET operation is not enabled.
+MAINNET auto infrastructure now exists for default-off dry-run/status/evidence/lesson reporting. A credential-selected operator-DB dry-run was completed on 2026-04-24 with no live order submitted. Live MAINNET auto-execution remains disabled by default and was not run. Broader MAINNET operation is not enabled.
 
 The dashboard has a shareable RC UI cleanup: the top of the app now shows mode, live scope, MAINNET auto block, MAINNET canary state, kill switch, active symbol, current state, and position state in plain text. The LIVE ACCESS panel is grouped into credential, readiness/shadow/account, preview/preflight, safety/canary controls, orders/fills, and advanced details.
 
@@ -21,6 +21,8 @@ The dashboard has a shareable RC UI cleanup: the top of the app now shows mode, 
 - Reference-price freshness hardening for MAINNET final preview/submit gates.
 - Cancel route fix: `POST /api/live/orders/:order_ref/cancel` uses the path `order_ref` as authoritative, accepts omitted or matching optional body `order_ref`, and rejects mismatches.
 - Operator UI cleanup that keeps safety-critical state visible by default without changing backend trading behavior.
+- MAINNET auto dry-run infrastructure with fail-closed live-start blocking, persisted risk budget/state/decision/watchdog/lesson metadata, headless helper scripts, evidence export, and lesson reports.
+- Operator-DB MAINNET auto dry-run evidence under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`.
 
 ## Validated Evidence Summary
 
@@ -66,7 +68,7 @@ Expected safe posture:
 ## Current Live Safety Posture
 
 - MAINNET canary is disabled by default.
-- MAINNET auto-execution is not implemented and remains blocked.
+- MAINNET auto live execution remains blocked by default. Dry-run infrastructure exists and must be used before any separate future live-auto task.
 - MAINNET manual canary requires a separate explicit operator task, server canary flag, exact confirmation text, fresh gates, and immediate cancel/reconcile.
 - Supported live symbols remain `BTCUSDT` and `BTCUSDC`.
 - Conditional/algo orders are unsupported.
@@ -76,14 +78,14 @@ Expected safe posture:
 ## Explicitly Not Enabled
 
 - Broader MAINNET operation.
-- MAINNET auto-execution.
+- Live MAINNET auto-execution.
 - Conditional/algo orders such as stop, take-profit, or trailing orders.
 - Liquidation heatmap/liquidation context as a signal, API, panel, or live decision layer.
 - Hedge mode, multi-assets mode, multi-symbol concurrent live runtime, auth, Tauri packaging, strategy marketplace, or optimization tooling.
 
 ## Evidence Artifact Policy
 
-`artifacts/testnet-soak/` and `artifacts/mainnet-canary/` are ignored local operational artifacts. They are not part of the release-candidate commit set by default.
+`artifacts/testnet-soak/`, `artifacts/mainnet-canary/`, and `artifacts/mainnet-auto/` are ignored local operational artifacts. They are not part of the release-candidate commit set by default.
 
 The committed repository should contain durable summaries and reports in `docs/`, while raw evidence bundles stay local unless a future task explicitly curates and secret-scans a bundle for publication. Historical evidence must not be rewritten to hide real failures; reports should preserve the truth that the second canary's first cancel attempt failed due to the old payload shape and the retry succeeded.
 
@@ -112,7 +114,8 @@ Safe smoke was run with MAINNET canary disabled and MAINNET auto stopped. No ord
 - Execution repair is bounded by recent-window exchange query limits.
 - `.env` credential mode is useful for local validation but is not production-grade secret storage.
 - Liquidation heatmap/liquidation context remains undesigned and must not influence live execution.
+- The operator-DB dry-run produced a would-submit lesson, but that only supports preparing a separate explicit live-auto plan; it is not approval to trade.
 
 ## Exact Next Bounded Task
 
-Review this snapshot and `docs/OPERATOR_HANDOFF.md`, then choose one bounded post-RC task. Do not submit another live order unless a separate explicit canary-execution task is requested and a fresh dry-run passes.
+Review the operator-DB MAINNET auto dry-run evidence, then prepare an explicit live-auto plan only if the operator wants to continue. Do not enable live MAINNET auto or submit another live order without a separate approved live-run task.

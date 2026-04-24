@@ -9,13 +9,15 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Paper Mode V1 is release-candidate complete.
 - Paper mode remains complete and isolated.
 - Live foundations are implemented for credential metadata, OS secure storage, explicit local env credential loading, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
-- MAINNET execution is disabled by default and MAINNET auto-execution is not implemented.
+- MAINNET execution is disabled by default. MAINNET auto infrastructure now exists for dry-run/status/evidence/lesson reporting, but live MAINNET auto execution remains config-blocked by default and was not run.
 - A real TESTNET soak was completed on 2026-04-23 and captured under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
 - Env-backed credential validation evidence was captured on 2026-04-24 under `artifacts/testnet-soak/20260424T061338Z-env-credential-validation/`.
 - A 2026-04-24 MAINNET canary retry after reference-price hardening submitted exactly one guarded `BTCUSDT` non-marketable `LIMIT` order, canceled it, reconciled flat with no fills, passed restart repair, and disabled the canary flag afterward; evidence is under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
 - A second-canary readiness dry-run on 2026-04-24 did not submit an order. It validated the current mainnet state, refreshed shadow/account/rules, exercised kill switch engage/release, and built a fresh non-marketable `BUY LIMIT BTCUSDT 0.001 @ 77800` preview while the mainnet canary server flag remained disabled; evidence is under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`.
 - A second bounded MAINNET canary execution on 2026-04-24 submitted one `BUY LIMIT BTCUSDT 0.001 @ 77800` order, canceled it, reconciled `executed_qty=0.000`, remained flat, passed restart repair, and disabled the canary flag afterward; evidence is under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`. The run exposed a cancel endpoint body ergonomics issue that is now fixed: the path `order_ref` is authoritative and duplicate body `order_ref` is no longer required.
 - Mainnet canary closure is complete. `docs/OPERATOR_HANDOFF.md` is the current operator handoff for safe startup, status inspection, evidence locations, and default-off mainnet posture.
+- MAINNET auto dry-run infrastructure adds `/api/live/mainnet-auto/status`, dry-run start/stop, decisions, lessons, risk-budget, and evidence-export endpoints. Dry-run can record ASO closed-candle decision outcomes and watchdog/risk blockers without submitting orders.
+- A credential-selected operator-DB MAINNET auto dry-run completed under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated masked `env-mainnet`, refreshed mainnet readiness/shadow, recorded one `dry_run_would_submit` decision, produced lessons/evidence, verified live start remained config-blocked, and submitted no order.
 - The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation or explicit TESTNET auto start, with fail-closed gates.
 - The repository can place a MAINNET canary `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, the rounded price is non-marketable, and all execution/reconciliation gates pass. `MARKET` is blocked for the first MAINNET canary.
 - The repository stores live credential metadata and source in SQLite. Raw secure-store secrets stay in OS secure storage; raw env secrets stay process-only when `RELXEN_CREDENTIAL_SOURCE=env` is explicitly enabled. In authoritative env-source mode, TESTNET env credentials take precedence at startup over persisted secure-store TESTNET active selections; MAINNET env credentials still require explicit selection.
@@ -38,7 +40,7 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 ## Glossary
 
 - Paper mode: Local simulated execution using market data, local wallets, local positions, and no real orders.
-- Live mode: Exchange-connected mode. In this repository state, TESTNET execution and default-off manual MAINNET canary execution exist; MAINNET auto remains blocked.
+- Live mode: Exchange-connected mode. In this repository state, TESTNET execution, default-off manual MAINNET canary execution, and MAINNET auto dry-run infrastructure exist; live MAINNET auto remains blocked.
 - Validation: A precondition check that proves a credential, rule set, account snapshot, setting, or intent is safe enough to proceed.
 - Order intent: Internal instruction describing desired side, quantity, reduce-only behavior, and reason before exchange formatting.
 - Preflight: Binance testnet `order/test` validation of a signed order payload. It validates request shape and exchange acceptance rules but does not place an order.
@@ -79,7 +81,7 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 
 - Broad mainnet operation beyond manual canary execution.
 - Conditional/algo orders.
-- MAINNET auto-execution.
+- Live MAINNET auto-execution. Dry-run infrastructure exists; real live auto requires a separate explicit task.
 - Multi-symbol concurrent runtime.
 - Broker-grade audit reporting.
 - Advanced order types beyond the first constrained live slice.
@@ -89,3 +91,5 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 ## Design Rule
 
 Future live implementation must proceed in small slices. The latest bounded manual MAINNET canary passed through the existing gates, but MAINNET auto-execution and broader mainnet operation remain out of scope until a separate design batch explicitly changes that boundary.
+
+The operator-DB MAINNET auto dry-run is evidence for planning only. It does not approve live auto execution.

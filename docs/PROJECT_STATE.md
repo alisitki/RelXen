@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Release-candidate cleanup / final snapshot complete.
+Credential-selected MAINNET auto dry-run complete.
 
 ## Current Status
 
@@ -34,6 +34,8 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms and has
 - `docs/OPERATOR_HANDOFF.md` now captures the safe operator handoff: how to start safely, verify env credential mode, confirm mainnet canary is disabled, inspect status/orders/fills, locate evidence, and avoid accidental scope expansion.
 - Release-candidate cleanup documented git/worktree hygiene and evidence policy in `docs/FINAL_RC_SNAPSHOT.md`: source/docs should be committed, `.env` stays ignored/untracked, raw operational evidence remains ignored local artifact data unless a future task explicitly curates and secret-scans it, and generated `web/dist`, `target`, `var`, and dependency outputs remain ignored.
 - Shareable RC UI cleanup added a top safety status strip and clearer LIVE ACCESS sections for credential, readiness/shadow/account, preview/preflight, safety/canary controls, orders/fills, and advanced details. No trading behavior was added and no order was submitted in the cleanup batch.
+- MAINNET auto infrastructure v1 now exists as default-off infrastructure only. It adds typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status endpoints, live-start fail-closed blocking, headless helper scripts, dry-run evidence export under `artifacts/mainnet-auto/<timestamp>/`, and lesson reports. Dry-run mode can inspect live status and record ASO decision outcomes without submitting orders. Live MAINNET auto remains disabled by default and requires a later explicit live-run task before any real order can be considered.
+- Credential-selected MAINNET auto dry-run evidence is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It ran against the operator DB with `env-mainnet` explicitly selected and validated, `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`, `RELXEN_MAINNET_AUTO_MODE=dry_run`, and the dry-run risk profile `mainnet-auto-operator-dry-run-v1`. The run refreshed mainnet readiness/shadow, confirmed `BTCUSDT`, one-way mode, single-asset mode, leverage `5`, no open BTCUSDT mainnet order, no BTCUSDT position, mainnet canary disabled, kill switch released, and live auto disabled. One dry-run decision was recorded as `dry_run_would_submit` using REST mark price with age `421 ms`; `orders.json` and `fills.json` are empty, `final_verdict.json` says `no_live_order_submitted`, and live-start verification returned `config_blocked` with live auto config disabled.
 - The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records real TESTNET credential validation, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart/recent-window repair, reconnect repair, and TESTNET auto proof with duplicate suppression.
 - The latest canary report is `docs/LATEST_MAINNET_CANARY_REPORT.md`.
 
@@ -75,11 +77,11 @@ Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent 
 
 ## Current Focus
 
-The project is in shareable release-candidate cleanup / commit-preparation state. It has env-backed credential validation evidence, real TESTNET soak evidence, a successful first bounded manual MAINNET canary evidence bundle, a post-canary audit confirming the default safe state, a second-canary readiness dry-run, a second bounded manual MAINNET canary execution bundle, the follow-up cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, and a cleaner operator-facing dashboard. Mainnet remains default-off and fail-closed; any broader mainnet capability still requires a separate design decision and implementation batch.
+The project has completed the first credential-selected MAINNET auto dry-run on the operator DB. It has env-backed credential validation evidence, real TESTNET soak evidence, two bounded manual MAINNET canary execution bundles, the follow-up cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, a cleaner operator-facing dashboard, mainnet-auto dry-run infrastructure, and an operator-DB dry-run evidence bundle with no live order submitted. Mainnet auto live execution remains default-off, config-blocked, and not approved.
 
 ## declared_next_task
 
-Review `docs/FINAL_RC_SNAPSHOT.md` and `docs/OPERATOR_HANDOFF.md`, then choose one bounded post-RC task. Do not submit another MAINNET order unless a separate explicit canary-execution task is requested and the dry-run checklist passes again.
+Prepare an explicit live-auto plan only if the operator wants to continue. Do not enable or run live MAINNET auto until a separate approved live-auto batch rechecks gates, budget, watchdog, and evidence requirements.
 
 ## done_when
 
@@ -92,6 +94,8 @@ Review `docs/FINAL_RC_SNAPSHOT.md` and `docs/OPERATOR_HANDOFF.md`, then choose o
 - `docs/OPERATOR_HANDOFF.md` exists and reflects the final safe operating posture.
 - `docs/FINAL_RC_SNAPSHOT.md` exists and documents repo hygiene, evidence policy, safe startup, test/build gate status, known risks, and the exact next bounded task.
 - The dashboard shows safety-critical state in plain text by default, including MAINNET auto blocked, MAINNET canary disabled/enabled, kill switch state, active symbol, current mode, blockers, and latest order/fill truth.
+- `/api/live/mainnet-auto/status`, dry-run start/stop, decisions, lessons, risk-budget, and evidence-export endpoints exist and show live auto blocked by default.
+- The operator-DB MAINNET auto dry-run evidence bundle records `dry_run_would_submit`, no live order submission, empty `orders.json` / `fills.json`, a blocked live-start check, and `lessons.md` / `lessons.json`.
 - `docs/LATEST_MAINNET_CANARY_REPORT.md` records the pass outcome, audit result, and post-canary recommendation.
 - No auto execution, no conditional/algo orders, no heatmap/liquidation decision layer, and no hidden bypass path are used.
 

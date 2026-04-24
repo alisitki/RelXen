@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines live-mode boundaries in terms of the current RelXen architecture. Credential validation, account snapshots, symbol rules, readiness, arming, user-data shadow reconciliation, precision-aware intent preview, testnet `order/test` preflight, constrained TESTNET `MARKET` / `LIMIT` execution/cancel/flatten/auto-execution, and default-off manual MAINNET canary execution exist.
+This document defines live-mode boundaries in terms of the current RelXen architecture. Credential validation, account snapshots, symbol rules, readiness, arming, user-data shadow reconciliation, precision-aware intent preview, testnet `order/test` preflight, constrained TESTNET `MARKET` / `LIMIT` execution/cancel/flatten/auto-execution, default-off manual MAINNET canary execution, and MAINNET auto dry-run infrastructure exist.
 
 ## Reusable Current Components
 
@@ -26,7 +26,8 @@ This document defines live-mode boundaries in terms of the current RelXen archit
 - Fill/order-status reconciliation: implemented for order lifecycle updates through user-data events plus bounded recent-window REST repair.
 - Live position truth: current exchange-authoritative shadow/account/order/fill state remains distinct from paper state and is used to gate execution.
 - Kill-switch boundary: Blocks new orders immediately and permits only safe recovery actions when deterministic.
-- Canary boundary: MAINNET manual canary requires server enablement, configured risk profile, arming, exact confirmation, and all normal gates. MAINNET auto is blocked.
+- Canary boundary: MAINNET manual canary requires server enablement, configured risk profile, arming, exact confirmation, and all normal gates.
+- MAINNET auto boundary: dry-run/status/evidence/lesson infrastructure exists; live MAINNET auto is blocked by default and requires explicit server config, operator arm/start, valid risk budget, watchdog, evidence logging, lesson reporting, and all normal gates in a future live-run task.
 
 ## Future Live Runtime State Machine
 
@@ -57,8 +58,10 @@ This document defines live-mode boundaries in terms of the current RelXen archit
 - `execution_degraded`: order, stream, or repair state is ambiguous; fail closed.
 - `mainnet_execution_blocked`: MAINNET is disabled by server canary policy or another fail-closed gate.
 - `mainnet_canary_ready`: manual MAINNET canary gates can pass for the displayed preview.
-- `mainnet_manual_execution_enabled`: exact confirmation for the current MAINNET preview is available. MAINNET auto remains unavailable.
-- `execution_not_implemented`: retained for routes/features that still do not have an execution implementation, including MAINNET auto and broader exchange features.
+- `mainnet_manual_execution_enabled`: exact confirmation for the current MAINNET preview is available. MAINNET auto live mode remains unavailable by default.
+- `dry_run_running`: MAINNET auto dry-run is recording decisions/evidence without submitting orders.
+- `watchdog_stopped`: MAINNET auto stopped with a persisted watchdog/operator reason.
+- `execution_not_implemented`: retained for routes/features that still do not have an execution implementation, including broader exchange features and unsupported order types.
 - Liquidation heatmap/liquidation-context features are outside this boundary for now. They must not be added as live decision inputs or execution gates without a separate design batch.
 - `start_blocked`: A live start/check command is blocked by the current gate result.
 - `ready`: Future execution-ready state after order-intent/executor work exists.

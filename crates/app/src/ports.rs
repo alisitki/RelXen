@@ -10,8 +10,9 @@ use relxen_domain::{
     LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
     LiveOrderPreflightResult, LiveOrderRecord, LiveReconciliationStatus,
     LiveReferencePriceSnapshot, LiveRiskProfile, LiveStateRecord, LiveSymbolRules,
-    LiveUserDataEvent, LogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
-    Trade, Wallet,
+    LiveUserDataEvent, LogEvent, MainnetAutoDecisionEvent, MainnetAutoLessonReport,
+    MainnetAutoRiskBudget, MainnetAutoStatus, MainnetAutoWatchdogEvent, Position, Settings,
+    SignalEvent, Symbol, SystemMetrics, Timeframe, Trade, Wallet,
 };
 
 use crate::{AppError, AppResult, OutboundEvent};
@@ -96,6 +97,32 @@ pub trait Repository: Send + Sync {
     async fn save_live_auto_executor(&self, status: &LiveAutoExecutorStatus) -> AppResult<()>;
     async fn get_live_intent_lock(&self, key: &str) -> AppResult<Option<LiveIntentLock>>;
     async fn upsert_live_intent_lock(&self, lock: &LiveIntentLock) -> AppResult<()>;
+    async fn load_mainnet_auto_status(&self) -> AppResult<MainnetAutoStatus>;
+    async fn save_mainnet_auto_status(&self, status: &MainnetAutoStatus) -> AppResult<()>;
+    async fn load_mainnet_auto_risk_budget(&self) -> AppResult<MainnetAutoRiskBudget>;
+    async fn save_mainnet_auto_risk_budget(&self, budget: &MainnetAutoRiskBudget) -> AppResult<()>;
+    async fn append_mainnet_auto_decision(
+        &self,
+        decision: &MainnetAutoDecisionEvent,
+    ) -> AppResult<()>;
+    async fn list_mainnet_auto_decisions(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoDecisionEvent>>;
+    async fn append_mainnet_auto_watchdog_event(
+        &self,
+        event: &MainnetAutoWatchdogEvent,
+    ) -> AppResult<()>;
+    async fn list_mainnet_auto_watchdog_events(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoWatchdogEvent>>;
+    async fn save_mainnet_auto_lesson_report(
+        &self,
+        report: &MainnetAutoLessonReport,
+    ) -> AppResult<()>;
+    async fn latest_mainnet_auto_lesson_report(&self)
+        -> AppResult<Option<MainnetAutoLessonReport>>;
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>>;
     async fn get_live_order(&self, order_ref: &str) -> AppResult<Option<LiveOrderRecord>>;
     async fn upsert_live_order(&self, order: &LiveOrderRecord) -> AppResult<()>;

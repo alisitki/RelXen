@@ -31,6 +31,10 @@ cargo run -p relxen-server
 - `RELXEN_CREDENTIAL_SOURCE`: set to `env` to load local operator credentials from `.env`. This setting is authoritative.
 - `RELXEN_ENABLE_ENV_CREDENTIALS`: compatibility alias; `true` enables env credentials only when `RELXEN_CREDENTIAL_SOURCE` is unset.
 - `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION`: enables the manual MAINNET canary path when every other gate passes. Default is `false`; leave it false for normal paper/testnet operation.
+- `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION`: live MAINNET auto gate. Default is `false`; leave it false unless a later explicit live-auto batch authorizes it.
+- `RELXEN_MAINNET_AUTO_MODE`: `dry_run` or `live`. Default is `dry_run`; dry-run records decisions/evidence and never submits orders.
+- `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES`, `RELXEN_MAINNET_AUTO_MAX_ORDERS`, `RELXEN_MAINNET_AUTO_MAX_FILLS`, `RELXEN_MAINNET_AUTO_MAX_NOTIONAL`, `RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS`: typed mainnet-auto risk budget inputs.
+- `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START`, `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP`, `RELXEN_MAINNET_AUTO_REQUIRE_MANUAL_CANARY_EVIDENCE`, `RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED`, `RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED`: fail-closed mainnet-auto requirements. Defaults keep evidence and lesson reporting mandatory.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for a bounded soak drill. Default is `false`; leave it off outside intentional soak validation.
 - `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: local-only env credential values when env source is enabled. `.env.example` must contain placeholders only and `.env` must never be committed.
 
@@ -72,6 +76,8 @@ curl http://localhost:3000/api/live/intent/preview
 curl http://localhost:3000/api/live/preflights
 curl http://localhost:3000/api/live/orders
 curl http://localhost:3000/api/live/fills
+curl http://localhost:3000/api/live/mainnet-auto/status
+curl http://localhost:3000/api/live/mainnet-auto/risk-budget
 ```
 
 ## Testnet Soak Evidence Capture
@@ -130,6 +136,24 @@ curl -X POST http://localhost:3000/api/live/drill/auto/replay-latest-signal \
 14. Use `Engage Kill Switch` to block all new live submissions immediately. Release requires explicit operator action.
 15. Use MAINNET canary controls only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, the active credential is explicitly selected mainnet, a risk profile is configured, all gates pass, a non-marketable `LIMIT` preview remains non-marketable after tick-size rounding, and the displayed exact confirmation text is entered.
 16. Use cancel/cancel-all or flatten only when shadow state is coherent. RelXen cancels active-symbol open orders first for flatten, then submits a reduce-only MARKET close intent when safe.
+
+## MAINNET Auto Dry-Run Infrastructure
+
+MAINNET auto infrastructure is available for dry-run validation only by default. It is headless-friendly and exposes status, risk-budget, decision, lesson, and evidence surfaces without requiring the UI.
+
+Safe dry-run commands:
+
+```sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/show_mainnet_auto_status.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/run_mainnet_auto_dry_run.sh
+RELXEN_BASE_URL=http://localhost:3000 scripts/export_mainnet_auto_evidence.sh
+```
+
+The helper scripts never print raw secrets, default to dry-run, and refuse to run if `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true` is present in the script environment. Dry-run decisions are persisted and exported under `artifacts/mainnet-auto/<timestamp>/` with empty `orders.json` / `fills.json` unless a future live batch explicitly authorizes real execution.
+
+Live MAINNET auto start remains fail-closed unless all of these are true in a future explicit batch: server config enables live auto, mode is `live`, the operator arms/starts the session with strong confirmation, mainnet credentials and readiness are fresh, risk budget is valid, manual canary evidence is accepted, evidence logging initializes, lesson output initializes, kill switch is released, and normal live gates pass.
+
+Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded one `dry_run_would_submit` decision, kept live start `config_blocked`, and submitted no order.
 
 If OS secure storage is unavailable, the UI/API report `secure_store_unavailable` and paper mode remains usable. If env source is enabled with missing or partial variables, the UI/API report env credential blockers and paper mode remains usable. `.env` is local-only operator convenience, not production-grade secret storage; never commit it or put raw secrets in SQLite, frontend storage, logs, screenshots, docs, reports, or evidence bundles.
 

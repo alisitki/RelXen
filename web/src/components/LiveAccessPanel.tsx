@@ -15,8 +15,12 @@ import {
   executeLivePreview,
   flattenLivePosition,
   flattenLivePositionWithPayload,
+  exportMainnetAutoEvidence,
   getLiveIntentPreview,
+  getLatestMainnetAutoLessons,
+  getMainnetAutoStatus,
   listLiveCredentials,
+  listMainnetAutoDecisions,
   liveStartCheck,
   refreshLiveReadiness,
   refreshLiveShadow,
@@ -25,8 +29,11 @@ import {
   selectLiveCredential,
   setLiveModePreference,
   startLiveAuto,
+  startMainnetAutoDryRun,
+  startMainnetAutoLiveBlocked,
   startLiveShadow,
   stopLiveAuto,
+  stopMainnetAutoDryRun,
   stopLiveShadow,
   updateLiveCredential,
   validateLiveCredential
@@ -203,6 +210,54 @@ export function LiveAccessPanel() {
   );
   const autoStartMutation = useLiveStatusMutation(startLiveAuto, "live_auto_start", setLiveStatus, addToast);
   const autoStopMutation = useLiveStatusMutation(stopLiveAuto, "live_auto_stop", setLiveStatus, addToast);
+  const mainnetAutoQuery = useQuery({
+    queryKey: ["mainnet-auto-status"],
+    queryFn: getMainnetAutoStatus
+  });
+  const mainnetAutoDecisionsQuery = useQuery({
+    queryKey: ["mainnet-auto-decisions"],
+    queryFn: () => listMainnetAutoDecisions(5)
+  });
+  const mainnetAutoLessonsQuery = useQuery({
+    queryKey: ["mainnet-auto-lessons"],
+    queryFn: getLatestMainnetAutoLessons
+  });
+  const mainnetAutoDryRunStartMutation = useMutation({
+    mutationFn: startMainnetAutoDryRun,
+    onSuccess: async () => {
+      notifyCommandSuccess(addToast, "live_start_check");
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-decisions"] });
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-lessons"] });
+      await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+    onError: (error) => notifyCommandError(addToast, "live_start_check", error)
+  });
+  const mainnetAutoDryRunStopMutation = useMutation({
+    mutationFn: stopMainnetAutoDryRun,
+    onSuccess: async () => {
+      notifyCommandSuccess(addToast, "live_auto_stop");
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-decisions"] });
+    },
+    onError: (error) => notifyCommandError(addToast, "live_auto_stop", error)
+  });
+  const mainnetAutoLiveStartMutation = useMutation({
+    mutationFn: startMainnetAutoLiveBlocked,
+    onSuccess: async (status) => {
+      addToast(`MAINNET live auto blocked: ${status.current_blockers.join(", ") || "server gates incomplete"}`, "error");
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-status"] });
+    },
+    onError: (error) => notifyCommandError(addToast, "live_start_check", error)
+  });
+  const mainnetAutoEvidenceMutation = useMutation({
+    mutationFn: exportMainnetAutoEvidence,
+    onSuccess: async (result) => {
+      addToast(`MAINNET auto evidence exported: ${result.path}`, "info");
+      await queryClient.invalidateQueries({ queryKey: ["mainnet-auto-status"] });
+    },
+    onError: (error) => notifyCommandError(addToast, "live_start_check", error)
+  });
   const riskProfileMutation = useLiveStatusMutation(
     () => configureLiveRiskProfile(defaultRiskProfile(liveStatus)),
     "live_risk_profile",
@@ -366,6 +421,10 @@ export function LiveAccessPanel() {
     killReleaseMutation.isPending ||
     autoStartMutation.isPending ||
     autoStopMutation.isPending ||
+    mainnetAutoDryRunStartMutation.isPending ||
+    mainnetAutoDryRunStopMutation.isPending ||
+    mainnetAutoLiveStartMutation.isPending ||
+    mainnetAutoEvidenceMutation.isPending ||
     riskProfileMutation.isPending ||
     executeMutation.isPending ||
     cancelMutation.isPending ||
@@ -385,6 +444,7 @@ export function LiveAccessPanel() {
     liveStatus.execution.recent_fills.length > 0
       ? liveStatus.execution.recent_fills[liveStatus.execution.recent_fills.length - 1]
       : null;
+  const mainnetAuto = mainnetAutoQuery.data ?? liveStatus.mainnet_auto ?? defaultMainnetAutoStatus();
 
   return (
     <div className="grid-span-6">
@@ -663,6 +723,66 @@ export function LiveAccessPanel() {
               >
                 Stop TESTNET Auto
               </button>
+            </div>
+          </section>
+
+          <section className="live-section live-section--safety">
+            <div className="live-section__header">
+              <div>
+                <h3>Mainnet Auto Dry-Run</h3>
+                <p>Infrastructure only. Dry-run records decisions and lessons; live auto remains server-blocked by default.</p>
+              </div>
+              <span>{mainnetAutoMetric(mainnetAuto)}</span>
+            </div>
+            <div className="metric-grid metric-grid--compact">
+              <Metric label="Mainnet Auto" value={mainnetAutoMetric(mainnetAuto)} />
+              <Metric label="Mode" value={mainnetAuto.mode.toUpperCase()} />
+              <Metric
+                label="Live Config"
+                value={mainnetAuto.config.enable_live_execution ? "LIVE CONFIG ENABLED" : "LIVE CONFIG BLOCKED"}
+              />
+              <Metric
+                label="Risk Budget"
+                value={`max order ${mainnetAuto.risk_budget.max_notional_per_order} · max leverage ${mainnetAuto.risk_budget.max_leverage}`}
+              />
+              <Metric
+                label="Watchdog"
+                value={mainnetAuto.last_watchdog_stop_reason ?? "NO WATCHDOG STOP"}
+              />
+              <Metric
+                label="Lessons"
+                value={mainnetAutoLessonsQuery.data?.recommendation ?? mainnetAuto.latest_lessons_recommendation ?? "NO LESSON REPORT"}
+              />
+            </div>
+            <div className="blocker-strip" aria-label="Mainnet auto blockers">
+              <strong>MAINNET auto blockers</strong>
+              <span>
+                {mainnetAuto.current_blockers.length > 0
+                  ? mainnetAuto.current_blockers.join(", ")
+                  : "NONE FOR DRY-RUN"}
+              </span>
+              <span>Live auto start is intentionally not an easy UI action; backend gates still block it by default.</span>
+            </div>
+            <div className="action-row">
+              <button type="button" disabled={busy} onClick={() => mainnetAutoDryRunStartMutation.mutate()}>
+                Start MAINNET Auto Dry-Run
+              </button>
+              <button
+                type="button"
+                disabled={busy || mainnetAuto.state !== "dry_run_running"}
+                onClick={() => mainnetAutoDryRunStopMutation.mutate()}
+              >
+                Stop Dry-Run
+              </button>
+              <button type="button" disabled={busy} onClick={() => mainnetAutoEvidenceMutation.mutate()}>
+                Export Auto Evidence
+              </button>
+              <button type="button" disabled={busy} onClick={() => mainnetAutoLiveStartMutation.mutate()}>
+                Verify Live Auto Blocked
+              </button>
+            </div>
+            <div className="muted">
+              Last decision: {mainnetAutoDecisionsQuery.data?.at(-1)?.outcome ?? mainnetAuto.last_decision_outcome ?? "none"} · no UI state here submits an order.
             </div>
           </section>
 
@@ -1087,6 +1207,81 @@ function autoMetric(status: LiveStatusSnapshot): string {
     return "AUTO DEGRADED";
   }
   return "AUTO STOPPED";
+}
+
+function mainnetAutoMetric(status: LiveStatusSnapshot["mainnet_auto"]): string {
+  if (status.state === "dry_run_running") {
+    return "MAINNET AUTO DRY-RUN RUNNING";
+  }
+  if (status.state === "watchdog_stopped") {
+    return `WATCHDOG STOPPED · ${status.last_watchdog_stop_reason ?? "reason unavailable"}`;
+  }
+  if (status.state === "live_running") {
+    return "MAINNET AUTO LIVE RUNNING";
+  }
+  if (!status.config.enable_live_execution) {
+    return "MAINNET AUTO BLOCKED BY SERVER CONFIG";
+  }
+  return `MAINNET AUTO ${status.state.replaceAll("_", " ").toUpperCase()}`;
+}
+
+function defaultMainnetAutoStatus(): LiveStatusSnapshot["mainnet_auto"] {
+  return {
+    state: "disabled",
+    mode: "dry_run",
+    config: {
+      enable_live_execution: false,
+      mode: "dry_run",
+      max_runtime_minutes: 15,
+      max_orders: 1,
+      max_fills: 1,
+      max_notional: "80",
+      max_daily_loss: "5",
+      require_flat_start: true,
+      require_flat_stop: true,
+      require_manual_canary_evidence: true,
+      evidence_required: true,
+      lesson_report_required: true
+    },
+    risk_budget: {
+      configured: true,
+      budget_id: "mainnet-auto-dry-run-default",
+      max_notional_per_order: "80",
+      max_total_session_notional: "80",
+      max_open_notional: "80",
+      max_orders_per_session: 1,
+      max_fills_per_session: 1,
+      max_consecutive_losses: 1,
+      max_consecutive_rejections: 1,
+      max_daily_realized_loss: "5",
+      max_position_age_seconds: 300,
+      max_runtime_minutes: 15,
+      max_leverage: "5",
+      require_flat_start: true,
+      require_flat_stop: true,
+      allowed_symbols: ["BTCUSDT"],
+      allowed_order_types: ["LIMIT"],
+      require_fresh_reference_price: true,
+      require_fresh_shadow: true,
+      require_fresh_user_data_stream: true,
+      require_evidence_logging: true,
+      require_lessons_report: true,
+      updated_at: 0
+    },
+    session_id: null,
+    started_at: null,
+    stopped_at: null,
+    last_decision_id: null,
+    last_decision_outcome: null,
+    last_watchdog_stop_reason: null,
+    blocking_reasons: ["mainnet_auto_config_disabled"],
+    current_blockers: ["mainnet_auto_config_disabled"],
+    latest_lessons_recommendation: "live_not_allowed",
+    live_orders_submitted: 0,
+    dry_run_orders_submitted: 0,
+    evidence_path: null,
+    updated_at: 0
+  };
 }
 
 function riskMetric(status: LiveStatusSnapshot): string {

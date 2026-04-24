@@ -92,14 +92,17 @@
 - Release-candidate cleanup completed: git/worktree hygiene, ignored artifact policy, generated-output policy, final safe-smoke status, and known residual risks were captured in `docs/FINAL_RC_SNAPSHOT.md`.
 - Shareable RC UI cleanup completed: top safety summary, clearer LIVE ACCESS grouping, friendlier safety language, and frontend regression coverage for MAINNET auto blocked / canary disabled / preflight-not-execution / canceled-not-filled states.
 - Shadow/reconciliation environment mismatch now blocks readiness, preview, and execution gates.
+- MAINNET auto infrastructure v1 added default-off typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status APIs, live-start fail-closed blocking, headless helper scripts, evidence export, and lesson reports. No TESTNET or MAINNET order is submitted by the dry-run path.
+- Credential-selected MAINNET auto dry-run completed on the operator DB under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`: `env-mainnet` was selected/validated, mainnet readiness/shadow refreshed, one dry-run decision recorded `dry_run_would_submit`, live-start remained `config_blocked`, and no live order/fill was submitted.
 
 ## Immediate Next Task
 
-Review `docs/FINAL_RC_SNAPSHOT.md` and `docs/OPERATOR_HANDOFF.md`, then choose one bounded post-RC task. If another canary is ever requested, run a fresh dry-run checklist first and keep the canary flag disabled until a separate explicit execution task.
+Review the operator-DB MAINNET auto dry-run evidence and decide whether to write a separate explicit live-auto plan. Do not run live MAINNET auto until that separate plan is approved and all gates are rechecked.
 
 ## Deferred Live Execution Work
 
 - Broader mainnet enablement policy after the bounded manual canary evidence.
+- Real MAINNET auto live execution. Infrastructure and dry-run exist, but live mode remains config-gated, operator-armed, watchdog-protected, and default-off.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - Hedge mode and multi-assets mode support if explicitly designed and tested.
 - Portfolio-level exposure controls beyond the active symbol.

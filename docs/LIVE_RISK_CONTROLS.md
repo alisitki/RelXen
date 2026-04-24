@@ -20,6 +20,8 @@ Live execution must be operator-gated and fail closed. In the current repository
 - A second-canary readiness dry-run exists under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`; it did not submit an order and kept the mainnet canary server flag disabled.
 - A second bounded MAINNET canary execution exists under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`; it submitted one order, canceled it, left no fill/position, and disabled the canary flag afterward. Its cancel payload ergonomics issue has been fixed and regression-tested without submitting another order.
 - Mainnet-canary closure is an operator handoff, not broader enablement. MAINNET canary remains session-only, MAINNET auto remains blocked, and any further canary must repeat fresh dry-run gates first.
+- MAINNET auto infrastructure has its own persisted risk budget and remains live-blocked by default. Dry-run may evaluate a would-submit decision, but it must not call the exchange order endpoint. Future live auto requires explicit server config, operator arm/start, fresh account/rules/shadow/reference price, flat-start checks, evidence logging, lesson reporting, and watchdog readiness.
+- The operator-DB dry-run used risk budget `mainnet-auto-operator-dry-run-v1`: `BTCUSDT`, `LIMIT` only, max leverage `5`, one order/fill max, `80` max notional/order/session/open, flat start/stop, fresh shadow/reference, evidence logging, and lesson report required. This is a dry-run profile only and is not approval for live auto.
 
 ## Runtime Guards
 
@@ -34,6 +36,7 @@ Live execution must be operator-gated and fail closed. In the current repository
 - Real submission handling uses `ACK` and authoritative reconciliation; an ACK is never treated as a fill.
 - User-data streams force reconnect and REST repair before the 24-hour lifecycle limit.
 - Execution repair is recent-window only because Binance order/trade query retention is finite.
+- MAINNET auto watchdog stop reasons include kill switch, stale shadow/account/rules/reference price, user-data stream down, unexpected open order/position, max runtime/orders/fills/loss/rejections, duplicate signal, unsupported account/margin mode, evidence logging failure, lesson report failure, config disabled, and operator stop.
 
 ## Start-Gating Conditions
 
@@ -57,6 +60,7 @@ Live runtime may start only when all are true:
 - MAINNET canary has the server canary flag enabled and exact confirmation text for the current preview.
 - MAINNET canary preview is `LIMIT`, non-marketable after rounding, and based on a fresh reference price.
 - MAINNET canary review has the current TESTNET soak evidence bundle and updated checklist.
+- MAINNET auto live mode has `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, an operator arm/start command, a valid risk budget, and evidence/lesson output initialized. These gates are for a future explicit batch; current default is dry-run/live-blocked.
 
 ## Stop Conditions
 
@@ -91,6 +95,7 @@ The implemented TESTNET flatten path cancels active-symbol open orders first, th
 - Do not auto-rearm after kill switch.
 - Do not auto-rearm after reconciliation failure.
 - Do not auto-restart TESTNET auto-execution after kill switch or reconciliation failure.
+- Do not auto-restart MAINNET auto after watchdog stop, kill switch, evidence failure, lesson failure, or reconciliation ambiguity.
 - Require fresh account snapshot after any exchange rejection burst.
 - Require operator acknowledgement before moving from degraded/error back to ready.
 - Preserve audit events for the failure and recovery path.

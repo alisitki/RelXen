@@ -25,8 +25,10 @@ use relxen_domain::{
     LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
     LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
     LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile, LiveStateRecord,
-    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent, Position, Settings,
-    SignalEvent, Symbol, SystemMetrics, Timeframe, Trade, Wallet,
+    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent,
+    MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget, MainnetAutoStatus,
+    MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
+    Trade, Wallet,
 };
 
 pub fn candle(index: i64) -> Candle {
@@ -121,6 +123,11 @@ pub struct MockRepository {
     live_risk_profile: Mutex<Option<LiveRiskProfile>>,
     live_auto_executor: Mutex<Option<LiveAutoExecutorStatus>>,
     live_intent_locks: Mutex<Vec<LiveIntentLock>>,
+    mainnet_auto_status: Mutex<Option<MainnetAutoStatus>>,
+    mainnet_auto_risk_budget: Mutex<Option<MainnetAutoRiskBudget>>,
+    mainnet_auto_decisions: Mutex<Vec<MainnetAutoDecisionEvent>>,
+    mainnet_auto_watchdog_events: Mutex<Vec<MainnetAutoWatchdogEvent>>,
+    mainnet_auto_lessons: Mutex<Vec<MainnetAutoLessonReport>>,
     live_orders: Mutex<Vec<LiveOrderRecord>>,
     live_fills: Mutex<Vec<LiveFillRecord>>,
 }
@@ -440,6 +447,100 @@ impl Repository for MockRepository {
             locks.push(lock.clone());
         }
         Ok(())
+    }
+
+    async fn load_mainnet_auto_status(&self) -> AppResult<MainnetAutoStatus> {
+        Ok(self
+            .mainnet_auto_status
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_status(&self, status: &MainnetAutoStatus) -> AppResult<()> {
+        *self.mainnet_auto_status.lock().await = Some(status.clone());
+        Ok(())
+    }
+
+    async fn load_mainnet_auto_risk_budget(&self) -> AppResult<MainnetAutoRiskBudget> {
+        Ok(self
+            .mainnet_auto_risk_budget
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn save_mainnet_auto_risk_budget(&self, budget: &MainnetAutoRiskBudget) -> AppResult<()> {
+        *self.mainnet_auto_risk_budget.lock().await = Some(budget.clone());
+        Ok(())
+    }
+
+    async fn append_mainnet_auto_decision(
+        &self,
+        decision: &MainnetAutoDecisionEvent,
+    ) -> AppResult<()> {
+        self.mainnet_auto_decisions
+            .lock()
+            .await
+            .push(decision.clone());
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_decisions(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoDecisionEvent>> {
+        let mut decisions = self.mainnet_auto_decisions.lock().await.clone();
+        decisions.sort_by_key(|decision| decision.created_at);
+        if decisions.len() > limit {
+            decisions = decisions.split_off(decisions.len() - limit);
+        }
+        Ok(decisions)
+    }
+
+    async fn append_mainnet_auto_watchdog_event(
+        &self,
+        event: &MainnetAutoWatchdogEvent,
+    ) -> AppResult<()> {
+        self.mainnet_auto_watchdog_events
+            .lock()
+            .await
+            .push(event.clone());
+        Ok(())
+    }
+
+    async fn list_mainnet_auto_watchdog_events(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<MainnetAutoWatchdogEvent>> {
+        let mut events = self.mainnet_auto_watchdog_events.lock().await.clone();
+        events.sort_by_key(|event| event.created_at);
+        if events.len() > limit {
+            events = events.split_off(events.len() - limit);
+        }
+        Ok(events)
+    }
+
+    async fn save_mainnet_auto_lesson_report(
+        &self,
+        report: &MainnetAutoLessonReport,
+    ) -> AppResult<()> {
+        self.mainnet_auto_lessons.lock().await.push(report.clone());
+        Ok(())
+    }
+
+    async fn latest_mainnet_auto_lesson_report(
+        &self,
+    ) -> AppResult<Option<MainnetAutoLessonReport>> {
+        Ok(self
+            .mainnet_auto_lessons
+            .lock()
+            .await
+            .iter()
+            .max_by_key(|report| report.created_at)
+            .cloned())
     }
 
     async fn list_live_orders(&self, limit: usize) -> AppResult<Vec<LiveOrderRecord>> {

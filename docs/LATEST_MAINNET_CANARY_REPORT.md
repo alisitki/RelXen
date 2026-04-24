@@ -2,7 +2,7 @@
 
 ## Report Status
 
-Status: GO for mainnet-canary closure / operator handoff.
+Status: GO for mainnet-canary closure / operator handoff; MAINNET auto dry-run infrastructure added afterward with live mode still disabled.
 
 Date: 2026-04-24
 
@@ -12,7 +12,7 @@ Second-canary evidence bundle: `artifacts/mainnet-canary/20260424T122751Z-second
 
 Credential source: env-backed `env-mainnet`, masked only.
 
-MAINNET canary server gate was enabled only after reference-price hardening tests, leverage, balance, local-risk, and initial-preview gates passed. MAINNET auto-execution remained blocked. Exactly one manual MAINNET `LIMIT` canary was submitted, canceled, reconciled, and restart-repair checked. The server canary flag was disabled afterward.
+MAINNET canary server gate was enabled only after reference-price hardening tests, leverage, balance, local-risk, and initial-preview gates passed. MAINNET auto-execution remained blocked. Exactly one manual MAINNET `LIMIT` canary was submitted, canceled, reconciled, and restart-repair checked. The server canary flag was disabled afterward. MAINNET auto now has dry-run/status/evidence infrastructure, but live MAINNET auto remains default-off and was not run.
 
 ## Outcome
 
@@ -198,10 +198,28 @@ Operator handoff:
 - `docs/OPERATOR_HANDOFF.md` now records safe startup, env credential verification, mainnet disabled checks, order/fill inspection, evidence paths, canary re-run prerequisites, never-do items, and rollback/stop notes.
 - `docs/FINAL_RC_SNAPSHOT.md` records the release-candidate cleanup result, evidence artifact policy, git/output hygiene, safe startup posture, test/build gate status, known risks, and the exact next bounded task.
 
+## Mainnet Auto Infrastructure Follow-Up
+
+MAINNET auto infrastructure v1 was added after canary closure without submitting any new order. The new surface is dry-run first:
+
+- `/api/live/mainnet-auto/status`
+- `/api/live/mainnet-auto/dry-run/start`
+- `/api/live/mainnet-auto/dry-run/stop`
+- `/api/live/mainnet-auto/start`
+- `/api/live/mainnet-auto/stop`
+- `/api/live/mainnet-auto/decisions`
+- `/api/live/mainnet-auto/lessons/latest`
+- `/api/live/mainnet-auto/risk-budget`
+- `/api/live/mainnet-auto/export-evidence`
+
+Live start remains fail-closed by default because `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false` and `RELXEN_MAINNET_AUTO_MODE=dry_run`. Dry-run decisions may record would-submit/blocker outcomes and lesson reports, but they do not call the exchange order endpoint and do not authorize live trading.
+
+The first credential-selected operator-DB dry-run is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, used dry-run budget `mainnet-auto-operator-dry-run-v1`, recorded `dry_run_would_submit`, generated lessons, verified live start remained `config_blocked`, and submitted no order.
+
 ## Final Verdict
 
 GO for mainnet-canary closure / operator handoff.
 
 Two bounded manual MAINNET canary orders were submitted across separate sessions, canceled, and reconciled. No fill occurred, no flatten was needed, restart repair passed, MAINNET auto remained blocked, and the canary flag was disabled afterward.
 
-Exact next task: use `docs/OPERATOR_HANDOFF.md` for normal safe startup/review. If another canary is ever requested, repeat the dry-run checklist first and keep the canary flag disabled until a separate explicit execution task.
+Exact next task: prepare a separate explicit live-auto plan only if the operator wants to continue. The dry-run result is not live-auto approval.
