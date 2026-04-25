@@ -162,6 +162,14 @@ MAINNET auto must not infer isolated margin from single-asset mode. Cross, isola
 
 The degraded 2026-04-25 `always_in_market` live run proved that blocking reversal and only reporting a flat-stop failure can leave exposure after a bounded session. MAINNET auto now owns a private reduce-only close path for coherent `always_in_market` reverse and `require_flat_stop`: close current position first, repair/reconcile until BTCUSDT is flat and no open order remains, and only then allow an opposite entry. If close submission, order repair, or position reconciliation is ambiguous, the system blocks the entry or marks stop degraded. This does not add conditional/algo orders, heatmap/liquidation logic, broader symbols, or a public mainnet bypass.
 
+### Live-auto evidence includes bounded stop settlement
+
+The operator-stopped 2026-04-25 `flat_allowed` live run showed that an auto-owned flat-stop order can be submitted milliseconds after the previously recorded `stopped_at` timestamp, causing the first export to omit the closing order/fill even though exchange state was flat. MAINNET auto now records stop time after flat-stop reconciliation, runs bounded live repair before evidence export, and includes session-owned stop/reverse settlement records for a 30-second post-stop evidence window. The window is intentionally narrow and tied to auto-owned order identity so evidence captures real close settlement without turning exports into broad recent-account dumps.
+
+### Market-data stream opening must time out visibly
+
+The same run showed the public kline runtime can remain in `opening Binance kline stream` without producing a first candle event. Runtime subscribe and first-event waits now time out after 15 seconds, record a reconnect/error state, and retry instead of staying silently stuck. This is an observability/safety hardening change only; it does not add a new signal, indicator, strategy rule, symbol, or order type.
+
 ### Mainnet auto leverage budget hard cap is 100x
 
 The explicit MAINNET auto leverage budget may now be configured up to `100x`; values above `100x` are rejected. The start gate still requires active-symbol exchange leverage to be no higher than the configured session budget, and RelXen still does not add an exchange leverage-adjustment endpoint. This is a gate change, not a recommendation to use high leverage.

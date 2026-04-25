@@ -17,10 +17,11 @@ use serde::Serialize;
 
 use relxen_domain::{
     build_live_order_preview, compute_aso_series, compute_performance, derive_signal_history,
-    mark_to_market, quantize_down, reset_wallets, signal_from_points, validate_settings,
-    warmup_candles_required, AsoCalculator, AsoPoint, AsoPolicyDecision, AsoPolicyInput,
-    AsoPositionPolicy, Candle, ConnectionState, ConnectionStatus, CreateLiveCredentialRequest,
-    DisarmLiveModeRequest, ExecutionMode, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
+    mainnet_auto_live_confirmation_text, mainnet_auto_live_runtime_allowed, mark_to_market,
+    quantize_down, reset_wallets, signal_from_points, validate_settings, warmup_candles_required,
+    AsoCalculator, AsoPoint, AsoPolicyDecision, AsoPolicyInput, AsoPositionPolicy, Candle,
+    ConnectionState, ConnectionStatus, CreateLiveCredentialRequest, DisarmLiveModeRequest,
+    ExecutionMode, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
     LiveAutoExecutorRequest, LiveAutoExecutorStateKind, LiveAutoExecutorStatus, LiveBlockingReason,
     LiveCancelAllRequest, LiveCancelRequest, LiveCancelResult, LiveCredentialId,
     LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialSource, LiveCredentialSummary,
@@ -42,7 +43,6 @@ use relxen_domain::{
     MainnetAutoStopReason, MainnetAutoWatchdogEvent, PaperEngine, PerformanceStats, Position,
     QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings, SignalEvent, SignalSide,
     Symbol, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
-    MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
 };
 
 use crate::events::{AppMetadata, BootstrapPayload, OutboundEvent};
@@ -54,6 +54,9 @@ use crate::ports::{
     MetricsPort, Repository, SecretStore, UnavailableLiveExchange, UnavailableSecretStore,
 };
 use crate::{AppError, AppResult};
+
+const MAINNET_AUTO_EVIDENCE_SETTLEMENT_GRACE_MS: i64 = 30_000;
+const MARKET_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct ServiceOptions {
@@ -1913,8 +1916,17 @@ impl AppService {
     }
 
     pub async fn export_mainnet_auto_evidence(&self) -> AppResult<MainnetAutoEvidenceExportResult> {
-        let status_before = self.live_status().await?;
         let auto_status_before = self.load_mainnet_auto_status_with_config().await?;
+        if auto_status_before.mode == MainnetAutoRunMode::Live {
+            if let Err(error) = self.repair_live_execution_recent_window().await {
+                warn!(
+                    event = "mainnet_auto_evidence_prerepair_failed",
+                    detail = %error,
+                    "MAINNET auto evidence export could not complete pre-export live repair"
+                );
+            }
+        }
+        let status_before = self.live_status().await?;
         let session_id = auto_status_before
             .session_id
             .clone()
@@ -1941,16 +1953,23 @@ impl AppService {
         let live_order_submitted = auto_status_before.live_orders_submitted > 0;
         let session_started_at = auto_status_before.started_at.unwrap_or(0);
         let session_finished_at = auto_status_before.stopped_at.unwrap_or(now);
+        let session_evidence_until = auto_status_before
+            .stopped_at
+            .map(|stopped_at| stopped_at.saturating_add(MAINNET_AUTO_EVIDENCE_SETTLEMENT_GRACE_MS))
+            .unwrap_or(now);
         let orders = if auto_status_before.mode == MainnetAutoRunMode::Live {
             self.repository
                 .list_live_orders(self.options.recent_live_order_limit)
                 .await?
                 .into_iter()
                 .filter(|order| {
-                    order.environment == LiveEnvironment::Mainnet
-                        && order.symbol == Symbol::BtcUsdt
-                        && order.submitted_at >= session_started_at
-                        && order.submitted_at <= session_finished_at
+                    mainnet_auto_order_in_export_window(
+                        order,
+                        &session_id,
+                        session_started_at,
+                        session_finished_at,
+                        session_evidence_until,
+                    )
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -1975,7 +1994,7 @@ impl AppService {
                 .filter(|fill| {
                     fill.symbol == Symbol::BtcUsdt
                         && fill.event_time >= session_started_at
-                        && fill.event_time <= session_finished_at
+                        && fill.event_time <= session_evidence_until
                         && (fill
                             .order_id
                             .as_ref()
@@ -3468,13 +3487,15 @@ impl AppService {
         if request.symbol != Symbol::BtcUsdt {
             blockers.push("mainnet_auto_symbol_not_btcusdt".to_string());
         }
-        if request.duration_minutes != 15 {
-            blockers.push("mainnet_auto_duration_not_15m".to_string());
+        if !mainnet_auto_live_runtime_allowed(request.duration_minutes) {
+            blockers.push("mainnet_auto_duration_not_allowed".to_string());
         }
         if request.order_type != LiveOrderType::Market {
             blockers.push("mainnet_auto_order_type_not_market".to_string());
         }
-        if request.confirmation_text != MAINNET_AUTO_LIVE_CONFIRMATION_TEXT {
+        if mainnet_auto_live_confirmation_text(request.duration_minutes)
+            .is_none_or(|confirmation| request.confirmation_text != confirmation)
+        {
             blockers.push("mainnet_auto_session_confirmation_missing".to_string());
         }
         if request.allowed_margin_type != self.options.mainnet_auto_config.allowed_margin_type {
@@ -3493,8 +3514,9 @@ impl AppService {
         {
             blockers.push("aso_zone_threshold_mismatch".to_string());
         }
-        if self.options.mainnet_auto_config.max_runtime_minutes != 15 {
-            blockers.push("mainnet_auto_config_runtime_not_15m".to_string());
+        if !mainnet_auto_live_runtime_allowed(self.options.mainnet_auto_config.max_runtime_minutes)
+        {
+            blockers.push("mainnet_auto_config_runtime_not_allowed".to_string());
         }
         if !(2..=20).contains(&self.options.mainnet_auto_config.max_orders) {
             blockers.push("mainnet_auto_config_max_orders_invalid".to_string());
@@ -3666,8 +3688,8 @@ impl AppService {
         if !(2..=20).contains(&budget.max_fills_per_session) {
             blockers.push("risk_budget_max_fills_invalid".to_string());
         }
-        if budget.max_runtime_minutes != 15 {
-            blockers.push("risk_budget_runtime_not_15m".to_string());
+        if !mainnet_auto_live_runtime_allowed(budget.max_runtime_minutes) {
+            blockers.push("risk_budget_runtime_not_allowed".to_string());
         }
         if !budget.require_flat_start || !budget.require_flat_stop {
             blockers.push("risk_budget_flat_start_stop_required".to_string());
@@ -4088,7 +4110,6 @@ impl AppService {
         &self,
         reason: MainnetAutoStopReason,
     ) -> AppResult<MainnetAutoStatus> {
-        let now = now_ms();
         let mut status = self.load_mainnet_auto_status_with_config().await?;
         let session_id = status
             .session_id
@@ -4137,6 +4158,7 @@ impl AppService {
                 }
             }
         }
+        let now = now_ms();
         status.state = if flat_stop_blocker.is_some() {
             MainnetAutoState::Degraded
         } else if reason == MainnetAutoStopReason::OperatorStop {
@@ -5508,10 +5530,14 @@ impl AppService {
             )
             .await;
 
-            let subscribe_result = self.market_data.subscribe_klines(symbol, timeframe).await;
+            let subscribe_result = tokio::time::timeout(
+                MARKET_STREAM_OPEN_TIMEOUT,
+                self.market_data.subscribe_klines(symbol, timeframe),
+            )
+            .await;
             let mut stream = match subscribe_result {
-                Ok(stream) => stream,
-                Err(error) => {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(error)) => {
                     reconnect_attempts += 1;
                     self.handle_disconnect(
                         symbol,
@@ -5523,13 +5549,46 @@ impl AppService {
                     sleep(Duration::from_secs(2)).await;
                     continue;
                 }
+                Err(error) => {
+                    reconnect_attempts += 1;
+                    self.handle_disconnect(
+                        symbol,
+                        timeframe,
+                        reconnect_attempts,
+                        format!(
+                            "subscribe timed out after {MARKET_STREAM_OPEN_TIMEOUT:?}: {error}"
+                        ),
+                    )
+                    .await;
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
             };
 
-            let first_item = tokio::select! {
-                _ = &mut stop_rx => {
-                    return;
+            let first_item = match tokio::time::timeout(MARKET_STREAM_OPEN_TIMEOUT, async {
+                tokio::select! {
+                    _ = &mut stop_rx => {
+                        None
+                    }
+                    next_item = stream.next() => next_item,
                 }
-                next_item = stream.next() => next_item,
+            })
+            .await
+            {
+                Ok(Some(item)) => Some(item),
+                Ok(None) => return,
+                Err(error) => {
+                    reconnect_attempts += 1;
+                    self.handle_disconnect(
+                        symbol,
+                        timeframe,
+                        reconnect_attempts,
+                        format!("stream first event timed out after {MARKET_STREAM_OPEN_TIMEOUT:?}: {error}"),
+                    )
+                    .await;
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
             };
             let first_event = match first_item {
                 Some(Ok(event)) => event,
@@ -8055,6 +8114,32 @@ fn write_json_file<T: Serialize>(dir: &Path, file: &str, value: &T) -> AppResult
     fs::write(dir.join(file), bytes)
         .map_err(|error| AppError::Live(format!("failed to write evidence {file}: {error}")))?;
     Ok(())
+}
+
+fn mainnet_auto_order_in_export_window(
+    order: &LiveOrderRecord,
+    session_id: &str,
+    session_started_at: i64,
+    session_finished_at: i64,
+    session_evidence_until: i64,
+) -> bool {
+    if order.environment != LiveEnvironment::Mainnet
+        || order.symbol != Symbol::BtcUsdt
+        || order.submitted_at < session_started_at
+        || order.submitted_at > session_evidence_until
+    {
+        return false;
+    }
+
+    if order.submitted_at <= session_finished_at {
+        return true;
+    }
+
+    order
+        .intent_hash
+        .as_ref()
+        .is_some_and(|hash| hash.contains(session_id))
+        || order.reason.starts_with("mainnet_auto_")
 }
 
 fn artifact_root() -> PathBuf {

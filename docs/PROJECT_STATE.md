@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-MAINNET auto reverse/flat-stop hardening implemented; no live order submitted in this batch.
+MAINNET auto flat-stop/evidence hardening completed after an operator-stopped live run.
 
 ## Current Status
 
@@ -48,6 +48,8 @@ Post-v1 live execution is now mainnet-ready in bounded engineering terms and has
 - The second 15-minute MAINNET auto live run used `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE=isolated` and `RELXEN_MAINNET_AUTO_POSITION_POLICY=always_in_market`. A small Binance account parser fix was required before start so USD-M account snapshots derive `isolated` / `cross` from the `isolated` field when `marginType` is absent. Session `mnauto_live_0518464591cd473fbdac1e34675c1cae` started on 2026-04-25, submitted one `BUY MARKET BTCUSDT 0.001` order, reconciled it as filled at average price `77493.50000`, then held LONG while ASO stayed LONG. Later ASO desired SHORT, but reversal was correctly blocked as `reversal_unsupported`. The watchdog stopped at `max_runtime_reached`; flat stop failed because `BTCUSDT` remained LONG `0.001`, so status is `degraded` with `unexpected_position` and kill switch engaged. Evidence export is `artifacts/mainnet-auto/1777104375086-mnauto_live_0518464591cd473fbdac1e34675c1cae/`.
 - MAINNET auto reverse/flat-stop hardening now adds an auto-owned reduce-only close helper for coherent stop and reverse flows. `always_in_market` LONG/SHORT reversal closes the current position first, waits for flat reconciliation, and only then submits the opposite entry. Watchdog/operator stop uses the same reduce-only close path when `require_flat_stop=true`. `crossover_only` preserves its conservative open-position blocker. The live-auto leverage budget gate now accepts explicit values up to `100x` and rejects values above `100x`. This implementation batch used mocked adapters only; no TESTNET or MAINNET order was submitted.
 - Manual operator-approved cleanup then used the existing canary-gated flatten endpoint with `FLATTEN MAINNET BTCUSDT` and submitted one `SELL MARKET BTCUSDT 0.001` reduce-only order. It reconciled as filled at average price `77513.60000`, leaving `BTCUSDT` flat with zero open orders. Evidence export is `artifacts/mainnet-canary/20260425T081553Z-mainnet-auto-manual-flatten/`. Kill switch remained engaged and the session-scoped canary server was stopped.
+- The operator-approved 60-minute `flat_allowed` MAINNET auto run used `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE=isolated`, `RELXEN_MAINNET_AUTO_POSITION_POLICY=flat_allowed`, ASO delta threshold `6`, zone threshold `54`, max leverage `20`, and max notional `80`. Session `mnauto_live_00388618d8df47b8aaa97269e2128cb8` submitted one `BUY MARKET BTCUSDT 0.001` entry at average price `77697.30000`; market-data runtime then remained stuck opening the Binance kline stream, so the operator stopped the run. The auto-owned flat-stop submitted one reduce-only `SELL MARKET BTCUSDT 0.001` exit at average price `77732.50000`, leaving final BTCUSDT position `0`, final open orders `0`, realized PnL `0.03520000`, and fees `0.07771490`. Corrected evidence is `artifacts/mainnet-auto/1777112199366-mnauto_live_00388618d8df47b8aaa97269e2128cb8/` and includes both orders and both fills.
+- Post-run hardening now records MAINNET auto `stopped_at` after flat-stop reconciliation, runs bounded live repair before evidence export, includes auto-owned post-stop settlement records for a 30-second evidence grace window, and gives the market-data kline stream open/first-event path a 15-second timeout instead of allowing an indefinite `opening Binance kline stream` state.
 - The current report is `docs/LATEST_TESTNET_SOAK_REPORT.md`; it records real TESTNET credential validation, shadow sync, preview, preflight, manual execution, cancel, flatten, kill switch, restart/recent-window repair, reconnect repair, and TESTNET auto proof with duplicate suppression.
 - The latest canary report is `docs/LATEST_MAINNET_CANARY_REPORT.md`.
 
@@ -89,7 +91,7 @@ Conditional/algo orders, hedge mode, multi-assets mode, multi-symbol concurrent 
 
 ## Current Focus
 
-The project has completed the first credential-selected MAINNET auto dry-run on the operator DB, the first explicit 15-minute MAINNET auto live trial, the policy-support batch, the second `always_in_market` live-auto run with manual cleanup, and the follow-up reverse/flat-stop hardening batch. It has env-backed credential validation evidence, real TESTNET soak evidence, two bounded manual MAINNET canary execution bundles, the cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, a cleaner operator-facing dashboard, mainnet-auto dry-run infrastructure, an operator-DB dry-run evidence bundle with no live order submitted, a gated 15-minute live-auto support path, mocked tests proving live ASO signal blockers, explicit cross/isolated margin gating, ASO position policy modes, an operator live-trial helper matching the requested terminal flags, startup compatibility for legacy persisted mainnet-auto status JSON, live-auto evidence showing both a no-order flat session and a degraded `always_in_market` session, and mocked proof that `always_in_market` can now reverse through reduce-only close plus flat reconciliation. Mainnet auto live execution remains default-off outside explicit session-scoped batches.
+The project has completed the first credential-selected MAINNET auto dry-run on the operator DB, the first explicit 15-minute MAINNET auto live trial, the policy-support batch, the second `always_in_market` live-auto run with manual cleanup, the follow-up reverse/flat-stop hardening batch, and an operator-stopped 60-minute `flat_allowed` run that entered and exited flat through the auto-owned flat-stop path. It has env-backed credential validation evidence, real TESTNET soak evidence, two bounded manual MAINNET canary execution bundles, the cancel endpoint body ergonomics fix, an operator handoff doc, a final RC snapshot doc, a cleaner operator-facing dashboard, mainnet-auto dry-run infrastructure, an operator-DB dry-run evidence bundle with no live order submitted, a gated live-auto support path for the approved bounded durations, mocked tests proving live ASO signal blockers, explicit cross/isolated margin gating, ASO position policy modes, an operator live-trial helper matching the requested terminal flags, startup compatibility for legacy persisted mainnet-auto status JSON, live-auto evidence showing a no-order flat session, a degraded `always_in_market` session, and a corrected flat `flat_allowed` session, plus mocked proof that `always_in_market` can now reverse through reduce-only close plus flat reconciliation. Mainnet auto live execution remains default-off outside explicit session-scoped batches.
 
 ## declared_next_task
 
@@ -123,6 +125,8 @@ Run the safe verification gate and a disabled-live-auto smoke/status check, then
 - Binance account snapshots derive margin type from `isolated` when `marginType` is absent, with a focused infra test proving isolated parsing.
 - The second live-auto evidence bundle records one submitted/filled order, later `reversal_unsupported` blockers, watchdog stop, final open orders `0`, final position LONG `0.001`, and `flat_stop_succeeded=false`.
 - Manual cleanup evidence records a reduce-only `SELL MARKET BTCUSDT 0.001` flatten fill and final `BTCUSDT` position amount `0`.
+- The corrected 60-minute `flat_allowed` live-auto evidence bundle records one filled `BUY MARKET` entry, one filled reduce-only `SELL MARKET` flat-stop exit, final BTCUSDT position `0`, final open orders `0`, realized PnL `0.03520000`, fees `0.07771490`, and `flat_stop_succeeded=true`.
+- Runtime/evidence hardening now prevents indefinite market stream opening states and keeps flat-stop settlement records inside live-auto evidence.
 - `docs/LATEST_MAINNET_CANARY_REPORT.md` records the pass outcome, audit result, and post-canary recommendation.
 - No auto execution, no conditional/algo orders, no heatmap/liquidation decision layer, and no hidden bypass path are used.
 
@@ -142,7 +146,7 @@ Run the safe verification gate and a disabled-live-auto smoke/status check, then
 ## Known Blockers
 
 - No known open BTCUSDT MAINNET position remains after the manual cleanup flatten.
-- The new `always_in_market` reverse and flat-stop paths are proven with mocked adapters only. A fresh disabled-live-auto smoke/status gate and explicit operator execution batch are still required before any real repeat run.
+- Before another real live-auto run, verify the public Binance kline runtime path with live auto disabled and add/confirm a watchdog-level market-data freshness stop so a session cannot keep exposure while fresh closed-candle updates are absent.
 
 ## Key References
 

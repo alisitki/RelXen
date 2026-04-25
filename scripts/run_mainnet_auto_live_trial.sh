@@ -5,7 +5,6 @@ BASE_URL="${RELXEN_BASE_URL:-http://localhost:3000}"
 SYMBOL="BTCUSDT"
 DURATION_MINUTES="${RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES:-15}"
 ORDER_TYPE="MARKET"
-REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M"
 CONFIRMATION="${RELXEN_MAINNET_AUTO_START_CONFIRMATION:-}"
 MAX_LEVERAGE="${RELXEN_MAINNET_AUTO_MAX_LEVERAGE:-5}"
 MAX_NOTIONAL="${RELXEN_MAINNET_AUTO_MAX_NOTIONAL:-80}"
@@ -21,7 +20,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_mainnet_auto_live_trial.sh \
   --symbol BTCUSDT \
-  --duration-minutes 15 \
+  --duration-minutes 15|60 \
   --max-leverage 100 \
   --max-notional 80 \
   --max-session-loss-usdt 5 \
@@ -30,7 +29,7 @@ usage: run_mainnet_auto_live_trial.sh \
   --position-policy crossover_only \
   --aso-delta-threshold 5 \
   --aso-zone-threshold 55 \
-  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M"
+  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M|60M"
 USAGE
 }
 
@@ -136,10 +135,19 @@ if [[ ! "$DURATION_MINUTES" =~ ^[0-9]+$ || ! "$MAX_ORDERS" =~ ^[0-9]+$ || ! "$MA
   exit 2
 fi
 
-if [[ "$SYMBOL" != "BTCUSDT" || "$DURATION_MINUTES" != "15" || "$ORDER_TYPE" != "MARKET" ]]; then
-  echo "Refusing to start live trial: v1 supports BTCUSDT MARKET for exactly 15 minutes." >&2
+if [[ "$SYMBOL" != "BTCUSDT" || "$ORDER_TYPE" != "MARKET" ]]; then
+  echo "Refusing to start live trial: v1 supports BTCUSDT MARKET only." >&2
   exit 2
 fi
+
+case "$DURATION_MINUTES" in
+  15) REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M" ;;
+  60) REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 60M" ;;
+  *)
+  echo "Refusing to start live trial: v1 supports 15 or 60 minutes only." >&2
+  exit 2
+  ;;
+esac
 
 if [[ ! "$MAX_LEVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !($MAX_LEVERAGE > 0 && $MAX_LEVERAGE <= 100) }"; then
   echo "Refusing to start live trial: --max-leverage must be greater than 0 and no more than 100." >&2
@@ -199,7 +207,7 @@ echo "Configuring bounded MAINNET auto live risk budget. This is not persisted l
 curl -fsS -X PUT "$BASE_URL/api/live/mainnet-auto/risk-budget" \
   -H 'content-type: application/json' \
   -d "$(jq -n \
-    --arg budget_id "mainnet-auto-live-trial-v1" \
+    --arg budget_id "mainnet-auto-live-${DURATION_MINUTES}m-v1" \
     --arg max_notional "$MAX_NOTIONAL" \
     --arg max_session_loss_usdt "$MAX_SESSION_LOSS_USDT" \
     --arg max_leverage "$MAX_LEVERAGE" \
@@ -217,7 +225,7 @@ curl -fsS -X PUT "$BASE_URL/api/live/mainnet-auto/risk-budget" \
       max_consecutive_losses: 1,
       max_consecutive_rejections: 1,
       max_daily_realized_loss: $max_session_loss_usdt,
-      max_position_age_seconds: 900,
+      max_position_age_seconds: ($max_runtime_minutes * 60),
       max_runtime_minutes: $max_runtime_minutes,
       max_leverage: $max_leverage,
       require_flat_start: true,

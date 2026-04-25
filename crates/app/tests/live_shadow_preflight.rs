@@ -4,15 +4,15 @@ use std::sync::atomic::Ordering;
 
 use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceOptions};
 use relxen_domain::{
-    AsoMode, AsoPositionPolicy, Candle, CreateLiveCredentialRequest, LiveAutoExecutorRequest,
-    LiveAutoExecutorStateKind, LiveBlockingReason, LiveCancelRequest,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveFillRecord,
-    LiveKillSwitchRequest, LiveMarginType, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LiveRiskLimits, LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder,
-    LiveShadowPosition, LiveShadowStreamState, LiveUserDataEvent, MainnetAutoAllowedMarginType,
-    MainnetAutoConfig, MainnetAutoDecisionOutcome, MainnetAutoLiveStartRequest,
-    MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState, Settings, Symbol, Timeframe,
-    MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
+    mainnet_auto_live_confirmation_text, AsoMode, AsoPositionPolicy, Candle,
+    CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
+    LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
+    LiveExecutionRequest, LiveFillRecord, LiveKillSwitchRequest, LiveMarginType, LiveOrderSide,
+    LiveOrderStatus, LiveOrderType, LiveRiskLimits, LiveRiskProfile, LiveRuntimeState,
+    LiveShadowBalance, LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState,
+    LiveUserDataEvent, MainnetAutoAllowedMarginType, MainnetAutoConfig, MainnetAutoDecisionOutcome,
+    MainnetAutoLiveStartRequest, MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState,
+    Settings, Symbol, Timeframe, MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
 };
 use rust_decimal::Decimal;
 
@@ -239,6 +239,16 @@ fn live_auto_start_request() -> MainnetAutoLiveStartRequest {
         position_policy: AsoPositionPolicy::CrossoverOnly,
         aso_delta_threshold: "5".to_string(),
         aso_zone_threshold: "55".to_string(),
+    }
+}
+
+fn live_auto_start_request_for_duration(duration_minutes: u64) -> MainnetAutoLiveStartRequest {
+    MainnetAutoLiveStartRequest {
+        duration_minutes,
+        confirmation_text: mainnet_auto_live_confirmation_text(duration_minutes)
+            .unwrap()
+            .to_string(),
+        ..live_auto_start_request()
     }
 }
 
@@ -1471,6 +1481,42 @@ async fn mainnet_auto_live_start_runs_session_without_immediate_order() {
 }
 
 #[tokio::test]
+async fn mainnet_auto_live_start_allows_explicit_sixty_minute_session() {
+    let mut fake = FakeLiveExchange::default();
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.max_runtime_minutes = 60;
+    let mut budget = live_auto_risk_budget();
+    budget.max_runtime_minutes = 60;
+    budget.max_position_age_seconds = 3600;
+    let service = mainnet_live_auto_service_with(exchange.clone(), Vec::new(), options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(budget)
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request_for_duration(60)))
+        .await
+        .unwrap();
+
+    assert_eq!(status.state, MainnetAutoState::LiveRunning);
+    assert_eq!(status.config.max_runtime_minutes, 60);
+    assert!(status.expires_at.is_some());
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn mainnet_auto_live_start_blocks_cross_margin_when_isolated_required() {
     let mut fake = FakeLiveExchange {
         account: Some(mainnet_account_with_margin_type(LiveMarginType::Cross)),
@@ -1880,6 +1926,21 @@ async fn mainnet_auto_stop_flattens_open_position_when_state_is_coherent() {
         })
         .unwrap_or_default();
     assert_eq!(amount, 0.0);
+
+    let evidence = service.export_mainnet_auto_evidence().await.unwrap();
+    let orders: Vec<serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(&evidence.path).join("orders.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0]["reason"], "mainnet_auto_flat_stop");
+    assert_eq!(orders[0]["reduce_only"], true);
+    let verdict: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(&evidence.path).join("final_verdict.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(verdict["orders_recorded"], 1);
+    assert_eq!(verdict["flat_stop_succeeded"], true);
 }
 
 #[tokio::test]

@@ -1571,7 +1571,22 @@ impl Default for MainnetAutoConfig {
     }
 }
 
-pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT: &str = "START MAINNET AUTO LIVE BTCUSDT 15M";
+pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M: &str = "START MAINNET AUTO LIVE BTCUSDT 15M";
+pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_60M: &str = "START MAINNET AUTO LIVE BTCUSDT 60M";
+pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT: &str = MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M;
+pub const MAINNET_AUTO_ALLOWED_RUNTIME_MINUTES: [u64; 2] = [15, 60];
+
+pub fn mainnet_auto_live_runtime_allowed(minutes: u64) -> bool {
+    MAINNET_AUTO_ALLOWED_RUNTIME_MINUTES.contains(&minutes)
+}
+
+pub fn mainnet_auto_live_confirmation_text(minutes: u64) -> Option<&'static str> {
+    match minutes {
+        15 => Some(MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M),
+        60 => Some(MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_60M),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
