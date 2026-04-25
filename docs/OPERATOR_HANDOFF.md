@@ -16,6 +16,8 @@ The dashboard RC UI has also been cleaned for review: the top safety strip makes
 
 Mainnet Auto Live Support v1 is implemented for a future explicitly approved 15-minute `BTCUSDT` session, but no real live-auto session has been run. The future start path is server-config-gated, session-confirmed, watchdog-protected, and evidence-logged; it remains blocked unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M` are supplied for that session.
 
+Operator-start preparation is in place for the 15-minute live trial. `scripts/run_mainnet_auto_live_trial.sh` accepts the explicit batch flags (`--max-leverage 5`, `--max-notional 80`, `--max-session-loss-usdt 5`, `--order-type MARKET`, and `--confirm ...`), verifies the running server is already in live-auto mode, configures the bounded risk budget, and then calls the existing live-start endpoint. It does not alter strategy logic or widen symbol/order scope.
+
 ## What Is Safe To Run
 
 Normal safe local operation:

@@ -263,7 +263,7 @@ Tests required:
 
 Goal: Implement a real gated MAINNET auto live-session path for a future explicit 15-minute `BTCUSDT` trial without starting it in this batch.
 
-Status: Implemented as Mainnet Auto Live Support v1. `POST /api/live/mainnet-auto/start` now accepts a typed live-start request requiring `BTCUSDT`, `15` minutes, `MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`. The service rejects unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, fresh MAINNET credential/readiness/shadow/rules/reference state, flat start, one-way/single-asset mode, leverage `<=5`, risk budget, watchdog, and evidence/lesson requirements pass. Closed-candle ASO signals can submit through the existing exchange adapter only from a `live_running` mainnet-auto session. Tests use mocked adapters; no real order was submitted.
+Status: Implemented as Mainnet Auto Live Support v1. `POST /api/live/mainnet-auto/start` accepts a typed live-start request requiring `BTCUSDT`, `15` minutes, `MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`. The service rejects unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, fresh MAINNET credential/readiness/shadow/rules/reference state, flat start, one-way/single-asset mode, leverage `<=5`, risk budget, watchdog, and evidence/lesson requirements pass. Closed-candle ASO signals can submit through the existing exchange adapter only from a `live_running` mainnet-auto session. Tests use mocked adapters; no real order was submitted. The operator helper now accepts the requested live-trial flags and checks the running server config before calling the start endpoint.
 
 Non-goals: No live session run, no TESTNET or MAINNET order in this batch, no conditional/algo orders, no liquidation heatmap, no symbol expansion.
 
@@ -363,7 +363,7 @@ Rollback/fail-closed behavior: Set `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`,
 
 ## Smallest Safe Next Implementation Batch
 
-Review `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/` and prepare a separate explicit live-auto plan only if the operator wants to continue. If a future live trial is ever requested, it must be a separate explicit batch with fresh gates and evidence review.
+Operator can start the explicit 15-minute live-auto trial with the documented session-scoped terminal sequence. After the run, review/export evidence, verify flat stop/no open order, and update the status docs with the actual result.
 
 ## What Not To Do Next
 

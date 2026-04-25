@@ -6,7 +6,7 @@ Paper Mode V1 is release-candidate complete. Post-v1 live capabilities now inclu
 
 The RC dashboard has been cleaned up for operator/friend review with a top safety summary and clearer LIVE ACCESS sections. This UI pass did not add trading behavior or submit any order.
 
-Mainnet Auto Live Support v1 is now implemented as a gated code path only. `POST /api/live/mainnet-auto/start` requires server live config, `RELXEN_MAINNET_AUTO_MODE=live`, `BTCUSDT`, `MARKET`, a 15-minute duration, the exact session confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, fresh live gates, risk budget, watchdog, and evidence/lesson logging. No real MAINNET auto session has been run, and MAINNET auto remains disabled by default.
+Mainnet Auto Live Support v1 is now implemented as a gated code path only. `POST /api/live/mainnet-auto/start` requires server live config, `RELXEN_MAINNET_AUTO_MODE=live`, `BTCUSDT`, `MARKET`, a 15-minute duration, the exact session confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, fresh live gates, risk budget, watchdog, and evidence/lesson logging. The operator helper accepts the explicit live-trial flags and verifies the running server is already session-scoped for live auto before calling the existing start endpoint. No real MAINNET auto session has been run by Codex, and MAINNET auto remains disabled by default.
 
 ## V1 Scope
 

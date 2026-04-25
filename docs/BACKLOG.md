@@ -95,10 +95,12 @@
 - MAINNET auto infrastructure v1 added default-off typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status APIs, live-start fail-closed blocking, headless helper scripts, evidence export, and lesson reports. No TESTNET or MAINNET order is submitted by the dry-run path.
 - Credential-selected MAINNET auto dry-run completed on the operator DB under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`: `env-mainnet` was selected/validated, mainnet readiness/shadow refreshed, one dry-run decision recorded `dry_run_would_submit`, live-start remained `config_blocked`, and no live order/fill was submitted.
 - Mainnet Auto Live Support v1 implemented the gated future live path without running it: typed `BTCUSDT` / 15-minute / `MARKET` start request, exact session confirmation, server config gates, live-running session state, closed-candle ASO signal handling through mocked adapter tests, one-position/one-in-flight enforcement, runtime watchdog, live evidence/lesson support, and headless live-trial/status scripts.
+- Mainnet Auto Live Support verification gate rerun completed without starting a real MAINNET auto session, submitting TESTNET/MAINNET orders, or calling real cancel/flatten. Mocked live-ASO tests now prove existing MAINNET shadow open-position and open-order state produces separate `open_position` / `open_order` blockers before any submit attempt.
+- Operator-start command preparation completed for the 15-minute live trial: the live helper now accepts the explicit batch flags, checks the running server is already in session-scoped live-auto mode, configures the bounded risk budget, and calls the existing start endpoint. No live session was started and no order was submitted during this prep.
 
 ## Immediate Next Task
 
-Prepare a separate explicit execution batch if the operator still wants the 15-minute live trial. Do not run live MAINNET auto until that separate execution batch rechecks gates.
+Operator may start the 15-minute live trial with the documented terminal sequence. After the run, export evidence, verify flat stop/no open order, review lessons, and update docs with the actual outcome.
 
 ## Deferred Live Execution Work
 

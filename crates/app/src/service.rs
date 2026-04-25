@@ -5489,20 +5489,17 @@ impl AppService {
         }) {
             blockers.push("open_order".to_string());
         }
-        if live_status
-            .reconciliation
-            .shadow
-            .as_ref()
-            .is_some_and(|shadow| {
-                !shadow.open_orders.is_empty()
-                    || shadow.positions.iter().any(|position| {
-                        position.symbol == Symbol::BtcUsdt
-                            && Decimal::from_str(&position.position_amt).unwrap_or(Decimal::ZERO)
-                                != Decimal::ZERO
-                    })
-            })
-        {
-            blockers.push("open_position_or_order".to_string());
+        if let Some(shadow) = live_status.reconciliation.shadow.as_ref() {
+            if !shadow.open_orders.is_empty() {
+                blockers.push("open_order".to_string());
+            }
+            if shadow.positions.iter().any(|position| {
+                position.symbol == Symbol::BtcUsdt
+                    && Decimal::from_str(&position.position_amt).unwrap_or(Decimal::ZERO)
+                        != Decimal::ZERO
+            }) {
+                blockers.push("open_position".to_string());
+            }
         }
 
         let lock_key = format!(

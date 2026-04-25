@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, timeout};
 
 use relxen_app::{
@@ -603,6 +603,9 @@ pub struct FakeLiveExchange {
     pub reference_price: StdMutex<Option<LiveReferencePriceSnapshot>>,
     pub fail_reference_price: bool,
     pub user_events: Mutex<VecDeque<Result<LiveUserDataEvent, AppError>>>,
+    pub user_event_sender: mpsc::UnboundedSender<Result<LiveUserDataEvent, AppError>>,
+    pub dynamic_user_events:
+        Mutex<Option<mpsc::UnboundedReceiver<Result<LiveUserDataEvent, AppError>>>>,
     pub user_trades: Mutex<Vec<LiveFillRecord>>,
     pub preflight_accept: bool,
     pub submitted_orders: Mutex<Vec<LiveOrderRecord>>,
@@ -668,6 +671,7 @@ impl SecretStore for TestSecretStore {
 
 impl Default for FakeLiveExchange {
     fn default() -> Self {
+        let (user_event_sender, dynamic_user_events) = mpsc::unbounded_channel();
         Self {
             validation_status: LiveCredentialValidationStatus::Valid,
             account: Some(fake_account_snapshot(LiveEnvironment::Testnet)),
@@ -679,6 +683,8 @@ impl Default for FakeLiveExchange {
             ))),
             fail_reference_price: false,
             user_events: Mutex::new(VecDeque::new()),
+            user_event_sender,
+            dynamic_user_events: Mutex::new(Some(dynamic_user_events)),
             user_trades: Mutex::new(Vec::new()),
             preflight_accept: true,
             submitted_orders: Mutex::new(Vec::new()),
@@ -815,7 +821,15 @@ impl LiveExchangePort for FakeLiveExchange {
     ) -> AppResult<relxen_app::LiveUserDataStream> {
         self.stream_subscriptions.fetch_add(1, Ordering::SeqCst);
         let events: Vec<_> = self.user_events.lock().await.drain(..).collect();
-        Ok(Box::pin(stream::iter(events).chain(stream::pending())))
+        let dynamic_events = self.dynamic_user_events.lock().await.take();
+        let dynamic_stream = match dynamic_events {
+            Some(receiver) => stream::unfold(receiver, |mut receiver| async {
+                receiver.recv().await.map(|event| (event, receiver))
+            })
+            .boxed(),
+            None => stream::pending().boxed(),
+        };
+        Ok(Box::pin(stream::iter(events).chain(dynamic_stream)))
     }
 
     async fn preflight_order_test(

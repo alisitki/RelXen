@@ -233,6 +233,73 @@ fn live_auto_start_request() -> MainnetAutoLiveStartRequest {
     }
 }
 
+fn mainnet_shadow_with(
+    positions: Vec<LiveShadowPosition>,
+    open_orders: Vec<LiveShadowOrder>,
+) -> relxen_domain::LiveAccountShadow {
+    relxen_domain::LiveAccountShadow {
+        environment: LiveEnvironment::Mainnet,
+        balances: vec![LiveShadowBalance {
+            asset: "USDT".to_string(),
+            wallet_balance: "1000".to_string(),
+            cross_wallet_balance: Some("1000".to_string()),
+            balance_change: Some("0".to_string()),
+            updated_at: relxen_app::now_ms(),
+        }],
+        positions,
+        open_orders,
+        can_trade: true,
+        multi_assets_margin: Some(false),
+        position_mode: Some("one_way".to_string()),
+        last_event_time: Some(relxen_app::now_ms()),
+        last_rest_sync_at: Some(relxen_app::now_ms()),
+        updated_at: relxen_app::now_ms(),
+        ambiguous: false,
+        divergence_reasons: Vec::new(),
+    }
+}
+
+fn mainnet_shadow_position(amount: &str) -> LiveShadowPosition {
+    LiveShadowPosition {
+        symbol: Symbol::BtcUsdt,
+        position_side: "BOTH".to_string(),
+        position_amt: amount.to_string(),
+        entry_price: "2000".to_string(),
+        unrealized_pnl: "0".to_string(),
+        margin_type: None,
+        isolated_wallet: None,
+        updated_at: relxen_app::now_ms(),
+    }
+}
+
+fn mainnet_shadow_open_order() -> LiveShadowOrder {
+    LiveShadowOrder {
+        order_id: "42".to_string(),
+        client_order_id: Some("rx_mainnet_auto_existing_order".to_string()),
+        symbol: Symbol::BtcUsdt,
+        side: LiveOrderSide::Buy,
+        order_type: LiveOrderType::Market,
+        time_in_force: None,
+        original_qty: "0.001".to_string(),
+        executed_qty: "0".to_string(),
+        price: None,
+        avg_price: None,
+        status: "NEW".to_string(),
+        execution_type: Some("NEW".to_string()),
+        reduce_only: false,
+        position_side: Some("BOTH".to_string()),
+        last_filled_qty: None,
+        last_filled_price: None,
+        commission: None,
+        commission_asset: None,
+        trade_id: None,
+        self_trade_prevention_mode: None,
+        price_match: None,
+        expire_reason: None,
+        last_update_time: relxen_app::now_ms(),
+    }
+}
+
 fn mainnet_confirmation(intent: &relxen_domain::LiveOrderIntent) -> String {
     format!(
         "SUBMIT MAINNET {} LIMIT {} {} @ {}",
@@ -1409,6 +1476,191 @@ async fn mainnet_auto_live_closed_candle_signal_submits_with_mocked_adapter_only
     assert_eq!(
         status.last_decision_outcome,
         Some(MainnetAutoDecisionOutcome::LiveSubmitRequested)
+    );
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_closed_candle_signal_blocks_when_shadow_has_open_position() {
+    let mut fake = FakeLiveExchange::default();
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service = mainnet_live_auto_service_with(
+        exchange.clone(),
+        vec![vec![Ok(event)]],
+        live_auto_options(),
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    exchange
+        .user_event_sender
+        .send(Ok(LiveUserDataEvent::AccountUpdate(mainnet_shadow_with(
+            vec![mainnet_shadow_position("0.001")],
+            Vec::new(),
+        ))))
+        .unwrap();
+
+    let shadow_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let shadow_has_position = service
+            .live_status()
+            .await
+            .unwrap()
+            .reconciliation
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| {
+                shadow
+                    .positions
+                    .iter()
+                    .any(|position| position.position_amt == "0.001")
+            });
+        if shadow_has_position {
+            break;
+        }
+        if tokio::time::Instant::now() >= shadow_deadline {
+            panic!("timed out waiting for mocked MAINNET shadow position");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    service.start_runtime().await.unwrap();
+    let decision_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let decision = loop {
+        let decisions = service.list_mainnet_auto_decisions(10).await.unwrap();
+        if let Some(decision) = decisions
+            .into_iter()
+            .find(|decision| decision.outcome == MainnetAutoDecisionOutcome::SkippedOpenPosition)
+        {
+            break decision;
+        }
+        if tokio::time::Instant::now() >= decision_deadline {
+            panic!("timed out waiting for open-position MAINNET auto decision");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    service.stop_runtime().await.unwrap();
+
+    assert!(decision
+        .blocking_reasons
+        .contains(&"open_position".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.live_orders_submitted, 0);
+    assert_eq!(
+        status.last_decision_outcome,
+        Some(MainnetAutoDecisionOutcome::SkippedOpenPosition)
+    );
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_closed_candle_signal_blocks_when_shadow_has_open_order() {
+    let mut fake = FakeLiveExchange::default();
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service = mainnet_live_auto_service_with(
+        exchange.clone(),
+        vec![vec![Ok(event)]],
+        live_auto_options(),
+    )
+    .await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    exchange
+        .user_event_sender
+        .send(Ok(LiveUserDataEvent::AccountUpdate(mainnet_shadow_with(
+            Vec::new(),
+            vec![mainnet_shadow_open_order()],
+        ))))
+        .unwrap();
+
+    let shadow_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let shadow_has_order = service
+            .live_status()
+            .await
+            .unwrap()
+            .reconciliation
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| !shadow.open_orders.is_empty());
+        if shadow_has_order {
+            break;
+        }
+        if tokio::time::Instant::now() >= shadow_deadline {
+            panic!("timed out waiting for mocked MAINNET shadow order");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    service.start_runtime().await.unwrap();
+    let decision_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let decision = loop {
+        let decisions = service.list_mainnet_auto_decisions(10).await.unwrap();
+        if let Some(decision) = decisions
+            .into_iter()
+            .find(|decision| decision.outcome == MainnetAutoDecisionOutcome::SkippedOpenOrder)
+        {
+            break decision;
+        }
+        if tokio::time::Instant::now() >= decision_deadline {
+            panic!("timed out waiting for open-order MAINNET auto decision");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    service.stop_runtime().await.unwrap();
+
+    assert!(decision
+        .blocking_reasons
+        .contains(&"open_order".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.live_orders_submitted, 0);
+    assert_eq!(
+        status.last_decision_outcome,
+        Some(MainnetAutoDecisionOutcome::SkippedOpenOrder)
     );
 }
 

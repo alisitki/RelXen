@@ -4,7 +4,7 @@
 
 Mainnet Auto Live Support v1 is implemented as a gated code path, but no real MAINNET auto session was started in this batch and no TESTNET or MAINNET order was submitted.
 
-Live MAINNET auto remains disabled by default. A future execution batch must start the server with explicit live config, recheck every gate, and use the exact session-level confirmation:
+Live MAINNET auto remains disabled by default. The operator-start command surface is prepared so the human operator can start the 15-minute batch directly from the terminal after rechecking every gate. The helper accepts the explicit v1 risk flags, verifies the running server is already in session-scoped live mode, configures the bounded risk budget, and then submits the existing typed start request. Use the exact session-level confirmation:
 
 ```text
 START MAINNET AUTO LIVE BTCUSDT 15M
@@ -51,13 +51,33 @@ START MAINNET AUTO LIVE BTCUSDT 15M
 
 ## Headless Commands
 
-Safe precheck:
+Terminal 1, start a session-scoped live-auto server. This does not start the auto session by itself:
+
+```sh
+RELXEN_CREDENTIAL_SOURCE=env \
+RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true \
+RELXEN_MAINNET_AUTO_MODE=live \
+RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false \
+RELXEN_AUTO_START=false \
+RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=15 \
+RELXEN_MAINNET_AUTO_MAX_ORDERS=20 \
+RELXEN_MAINNET_AUTO_MAX_FILLS=20 \
+RELXEN_MAINNET_AUTO_MAX_NOTIONAL=80 \
+RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS=5 \
+RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START=true \
+RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP=true \
+RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED=true \
+RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED=true \
+cargo run -p relxen-server
+```
+
+Terminal 2, run the safe precheck against that server:
 
 ```sh
 RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --precheck
 ```
 
-Future live trial start command, to run only in a separate approved execution batch:
+Terminal 2, start the live trial only if the precheck is clean and the operator intends to start real MAINNET auto execution:
 
 ```sh
 RELXEN_BASE_URL=http://localhost:3000 \
@@ -75,10 +95,17 @@ RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP=true \
 RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED=true \
 RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED=true \
 RELXEN_MAINNET_AUTO_START_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M" \
-./scripts/run_mainnet_auto_live_trial.sh --symbol BTCUSDT --duration-minutes 15
+./scripts/run_mainnet_auto_live_trial.sh \
+  --symbol BTCUSDT \
+  --duration-minutes 15 \
+  --max-leverage 5 \
+  --max-notional 80 \
+  --max-session-loss-usdt 5 \
+  --order-type MARKET \
+  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M"
 ```
 
-Heartbeat:
+Terminal 3, heartbeat while the session is running:
 
 ```sh
 RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --heartbeat

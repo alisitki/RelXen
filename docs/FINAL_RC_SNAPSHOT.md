@@ -6,7 +6,7 @@ RelXen is at release-candidate cleanup status as of 2026-04-24.
 
 Paper Mode V1 is complete. Real TESTNET execution has been validated. Two bounded manual MAINNET canaries have been completed and reconciled flat. The cancel endpoint ergonomics issue found during the second canary has been fixed. No order was submitted during this release-candidate cleanup pass.
 
-MAINNET auto infrastructure now exists for default-off dry-run/status/evidence/lesson reporting. A credential-selected operator-DB dry-run was completed on 2026-04-24 with no live order submitted. Mainnet Auto Live Support v1 is implemented for a future explicit 15-minute `BTCUSDT` session with session-level confirmation, watchdog, risk gates, and evidence/lesson logging, but no real live-auto session has been run. Live MAINNET auto-execution remains disabled by default. Broader MAINNET operation is not enabled.
+MAINNET auto infrastructure now exists for default-off dry-run/status/evidence/lesson reporting. A credential-selected operator-DB dry-run was completed on 2026-04-24 with no live order submitted. Mainnet Auto Live Support v1 is implemented for an explicit 15-minute `BTCUSDT` session with session-level confirmation, watchdog, risk gates, and evidence/lesson logging, but no real live-auto session has been run by Codex. The operator terminal helper now matches the requested explicit live-trial flags and checks the running server is in session-scoped live mode before calling the existing start endpoint. Live MAINNET auto-execution remains disabled by default. Broader MAINNET operation is not enabled.
 
 The dashboard has a shareable RC UI cleanup: the top of the app now shows mode, live scope, MAINNET auto block, MAINNET canary state, kill switch, active symbol, current state, and position state in plain text. The LIVE ACCESS panel is grouped into credential, readiness/shadow/account, preview/preflight, safety/canary controls, orders/fills, and advanced details.
 
@@ -22,7 +22,7 @@ The dashboard has a shareable RC UI cleanup: the top of the app now shows mode, 
 - Cancel route fix: `POST /api/live/orders/:order_ref/cancel` uses the path `order_ref` as authoritative, accepts omitted or matching optional body `order_ref`, and rejects mismatches.
 - Operator UI cleanup that keeps safety-critical state visible by default without changing backend trading behavior.
 - MAINNET auto dry-run infrastructure with fail-closed live-start blocking, persisted risk budget/state/decision/watchdog/lesson metadata, headless helper scripts, evidence export, and lesson reports.
-- Gated MAINNET auto live-session support for a future explicit 15-minute `BTCUSDT` `MARKET` trial: exact session confirmation, one-position/one-in-flight enforcement, watchdog runtime stop, closed-candle ASO signal path, mocked-adapter test coverage, and headless live trial/status scripts.
+- Gated MAINNET auto live-session support for an explicit operator-started 15-minute `BTCUSDT` `MARKET` trial: exact session confirmation, one-position/one-in-flight enforcement, watchdog runtime stop, closed-candle ASO signal path, mocked-adapter test coverage, and headless live trial/status scripts.
 - Operator-DB MAINNET auto dry-run evidence under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`.
 
 ## Validated Evidence Summary
@@ -119,4 +119,4 @@ Safe smoke was run with MAINNET canary disabled and MAINNET auto stopped. No ord
 
 ## Exact Next Bounded Task
 
-Review the operator-DB MAINNET auto dry-run evidence, then prepare an explicit live-auto plan only if the operator wants to continue. Do not enable live MAINNET auto or submit another live order without a separate approved live-run task.
+Operator may start the explicit 15-minute MAINNET auto trial from the documented terminal sequence. After the run, export evidence, verify flat stop/no open order, review lessons, and update docs with the actual outcome. Do not enable live MAINNET auto in normal startup.

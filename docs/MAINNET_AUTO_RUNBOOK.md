@@ -95,7 +95,7 @@ In dry-run, `orders.json` and `fills.json` must be empty or explicitly show that
 
 ## Live Mode Requirements For A Future Batch
 
-Do not start live MAINNET auto in the current boundary. Mainnet Auto Live Support v1 is implemented but unrun. A future live batch must require all of the following:
+Do not start live MAINNET auto in normal operation. Mainnet Auto Live Support v1 is implemented but unrun by Codex. For an operator-started live batch, the terminal helper now accepts the explicit v1 risk flags, checks the running server is in session-scoped live mode, configures the bounded risk budget, and then uses the existing typed start endpoint. A live batch must require all of the following:
 
 - `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`
 - `RELXEN_MAINNET_AUTO_MODE=live`
@@ -115,7 +115,27 @@ Do not start live MAINNET auto in the current boundary. Mainnet Auto Live Suppor
 
 If any input is missing, stale, ambiguous, or invalid, live start must fail closed and no order may be submitted.
 
-Future live trial command, for an approved execution batch only:
+Start the server in a dedicated terminal before the helper. This server config is session-scoped and does not start auto by itself:
+
+```sh
+RELXEN_CREDENTIAL_SOURCE=env \
+RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true \
+RELXEN_MAINNET_AUTO_MODE=live \
+RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=false \
+RELXEN_AUTO_START=false \
+RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=15 \
+RELXEN_MAINNET_AUTO_MAX_ORDERS=20 \
+RELXEN_MAINNET_AUTO_MAX_FILLS=20 \
+RELXEN_MAINNET_AUTO_MAX_NOTIONAL=80 \
+RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS=5 \
+RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START=true \
+RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP=true \
+RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED=true \
+RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED=true \
+cargo run -p relxen-server
+```
+
+Operator live trial command, only after `--precheck` is clean:
 
 ```sh
 RELXEN_BASE_URL=http://localhost:3000 \
@@ -129,7 +149,14 @@ RELXEN_MAINNET_AUTO_MAX_FILLS=20 \
 RELXEN_MAINNET_AUTO_MAX_NOTIONAL=80 \
 RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS=5 \
 RELXEN_MAINNET_AUTO_START_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M" \
-scripts/run_mainnet_auto_live_trial.sh --symbol BTCUSDT --duration-minutes 15
+scripts/run_mainnet_auto_live_trial.sh \
+  --symbol BTCUSDT \
+  --duration-minutes 15 \
+  --max-leverage 5 \
+  --max-notional 80 \
+  --max-session-loss-usdt 5 \
+  --order-type MARKET \
+  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M"
 ```
 
 Monitor and recovery helpers:
