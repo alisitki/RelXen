@@ -3612,7 +3612,7 @@ impl AppService {
             blockers.push("mainnet_auto_settings_leverage_above_max".to_string());
         }
 
-        let live_status = self.live_status().await?;
+        let mut live_status = self.live_status().await?;
         if live_status.environment != LiveEnvironment::Mainnet {
             blockers.push("mainnet_environment_not_selected".to_string());
         }
@@ -3620,11 +3620,22 @@ impl AppService {
             blockers.push("mainnet_credential_missing".to_string());
             return Ok(blockers);
         };
-        if credential.environment != LiveEnvironment::Mainnet {
+        let credential_environment = credential.environment;
+        let credential_valid = credential.validation_status.is_valid();
+        if credential_environment != LiveEnvironment::Mainnet {
             blockers.push("mainnet_credential_not_selected".to_string());
         }
-        if !credential.validation_status.is_valid() {
+        if !credential_valid {
             blockers.push("mainnet_validation_missing".to_string());
+        }
+        if live_status.environment == LiveEnvironment::Mainnet
+            && credential_environment == LiveEnvironment::Mainnet
+            && credential_valid
+        {
+            live_status = self
+                .mainnet_auto_shadow_blocker_with_repair(live_status)
+                .await
+                .0;
         }
         if live_status.kill_switch.engaged {
             blockers.push("kill_switch_engaged".to_string());
@@ -3976,6 +3987,25 @@ impl AppService {
                     return;
                 }
 
+                if let Ok(live_status) = service.live_status().await {
+                    let (_, shadow_blocker) = service
+                        .mainnet_auto_shadow_blocker_with_repair(live_status)
+                        .await;
+                    if let Some(blocker) = shadow_blocker {
+                        warn!(
+                            event = "mainnet_auto_shadow_stale",
+                            session_id = %session_id,
+                            blocker = %blocker,
+                            position_open,
+                            "MAINNET auto watchdog stopping session because shadow state is not fresh"
+                        );
+                        let _ = service
+                            .stop_mainnet_auto_with_reason(MainnetAutoStopReason::ShadowStale)
+                            .await;
+                        return;
+                    }
+                }
+
                 if let Err(error) = service
                     .record_mainnet_auto_watchdog_heartbeat(
                         &session_id,
@@ -4038,28 +4068,46 @@ impl AppService {
         {
             return Some("market_data_symbol_not_btcusdt".to_string());
         }
+        let stale_ms = self.options.mainnet_auto_market_data_stale_ms.max(1);
         if !matches!(
             state.connection_state.status,
             ConnectionStatus::Connected | ConnectionStatus::Resynced
         ) {
-            return if in_startup_grace {
-                None
-            } else {
-                Some(
-                    match state.connection_state.status {
-                        ConnectionStatus::Reconnecting => "market_data_stream_reconnecting",
-                        ConnectionStatus::Stale => "market_data_stream_stale",
-                        ConnectionStatus::Disconnected => "market_data_stream_disconnected",
-                        ConnectionStatus::Connected | ConnectionStatus::Resynced => {
-                            "market_data_stream_unknown"
-                        }
+            if state.connection_state.status == ConnectionStatus::Reconnecting {
+                match state.connection_state.last_message_time {
+                    Some(last_message_time)
+                        if now.saturating_sub(last_message_time) <= stale_ms =>
+                    {
+                        // Let the runtime reconnect inside the normal freshness window.
                     }
-                    .to_string(),
-                )
-            };
+                    Some(_) => return Some("market_data_stream_stale".to_string()),
+                    None => {
+                        return if in_startup_grace {
+                            None
+                        } else {
+                            Some("market_data_stream_no_messages".to_string())
+                        };
+                    }
+                }
+            } else {
+                return if in_startup_grace {
+                    None
+                } else {
+                    Some(
+                        match state.connection_state.status {
+                            ConnectionStatus::Reconnecting => "market_data_stream_reconnecting",
+                            ConnectionStatus::Stale => "market_data_stream_stale",
+                            ConnectionStatus::Disconnected => "market_data_stream_disconnected",
+                            ConnectionStatus::Connected | ConnectionStatus::Resynced => {
+                                "market_data_stream_unknown"
+                            }
+                        }
+                        .to_string(),
+                    )
+                };
+            }
         }
 
-        let stale_ms = self.options.mainnet_auto_market_data_stale_ms.max(1);
         let Some(last_message_time) = state.connection_state.last_message_time else {
             return if in_startup_grace {
                 None
@@ -4252,6 +4300,58 @@ impl AppService {
             "MAINNET auto repaired stale closed-candle gap"
         );
         Ok(true)
+    }
+
+    async fn mainnet_auto_shadow_blocker_with_repair(
+        &self,
+        live_status: LiveStatusSnapshot,
+    ) -> (LiveStatusSnapshot, Option<String>) {
+        if live_status.reconciliation.stream.state != LiveShadowStreamState::Running {
+            return (live_status, Some("shadow_stream_down".to_string()));
+        }
+        if !live_status.reconciliation.stream.stale {
+            return (live_status, None);
+        }
+
+        warn!(
+            event = "mainnet_auto_shadow_repair_started",
+            last_event_time = ?live_status.reconciliation.stream.last_event_time,
+            last_rest_sync_at = ?live_status.reconciliation.stream.last_rest_sync_at,
+            "MAINNET auto refreshing shadow before treating stale shadow as a stop condition"
+        );
+        match self.refresh_live_shadow().await {
+            Ok(repaired) => {
+                if repaired.reconciliation.stream.state == LiveShadowStreamState::Running
+                    && !repaired.reconciliation.stream.stale
+                {
+                    info!(
+                        event = "mainnet_auto_shadow_repair_finished",
+                        last_event_time = ?repaired.reconciliation.stream.last_event_time,
+                        last_rest_sync_at = ?repaired.reconciliation.stream.last_rest_sync_at,
+                        "MAINNET auto refreshed shadow and cleared stale shadow blocker"
+                    );
+                    (repaired, None)
+                } else {
+                    warn!(
+                        event = "mainnet_auto_shadow_repair_incomplete",
+                        stream_state = ?repaired.reconciliation.stream.state,
+                        stale = repaired.reconciliation.stream.stale,
+                        last_event_time = ?repaired.reconciliation.stream.last_event_time,
+                        last_rest_sync_at = ?repaired.reconciliation.stream.last_rest_sync_at,
+                        "MAINNET auto shadow refresh did not clear stale shadow blocker"
+                    );
+                    (repaired, Some("shadow_stale".to_string()))
+                }
+            }
+            Err(error) => {
+                warn!(
+                    event = "mainnet_auto_shadow_repair_failed",
+                    detail = %error,
+                    "MAINNET auto shadow refresh failed before stale-shadow stop"
+                );
+                (live_status, Some("shadow_stale_repair_failed".to_string()))
+            }
+        }
     }
 
     async fn record_mainnet_auto_dry_run_decision(
@@ -5411,6 +5511,7 @@ impl AppService {
                 reconciliation.stream.state = LiveShadowStreamState::Running;
                 reconciliation.stream.environment = environment;
                 reconciliation.stream.last_event_time = Some(now);
+                reconciliation.stream.stale = false;
                 reconciliation.shadow = Some(shadow);
                 reconciliation.updated_at = now;
                 self.repository
@@ -6663,7 +6764,15 @@ impl AppService {
             return Ok(());
         }
 
-        let mut live_status = self.live_status().await?;
+        let live_status = self.live_status().await?;
+        let (mut live_status, shadow_blocker) = self
+            .mainnet_auto_shadow_blocker_with_repair(live_status)
+            .await;
+        if shadow_blocker.is_some() {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::ShadowStale)
+                .await?;
+            return Ok(());
+        }
         let settings = self.state.lock().await.settings.clone();
         let reference = self
             .current_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt)
@@ -6720,13 +6829,6 @@ impl AppService {
         }
         if settings.active_symbol != Symbol::BtcUsdt || signal.symbol != Symbol::BtcUsdt {
             blockers.push("mainnet_auto_symbol_not_btcusdt".to_string());
-        }
-        if live_status.reconciliation.stream.state != LiveShadowStreamState::Running
-            || live_status.reconciliation.stream.stale
-        {
-            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::ShadowStale)
-                .await?;
-            return Ok(());
         }
         if reference.blocking_reason.is_some() {
             self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::ReferencePriceStale)
@@ -7832,6 +7934,36 @@ fn refresh_account_snapshot_from_shadow(
     Some(snapshot)
 }
 
+fn live_shadow_freshness_at(reconciliation: &LiveReconciliationStatus) -> Option<i64> {
+    let mut times = Vec::new();
+    if let Some(last_event_time) = reconciliation.stream.last_event_time {
+        times.push(last_event_time);
+    }
+    if let Some(last_rest_sync_at) = reconciliation.stream.last_rest_sync_at {
+        times.push(last_rest_sync_at);
+    }
+    if let Some(shadow) = reconciliation.shadow.as_ref() {
+        if let Some(last_event_time) = shadow.last_event_time {
+            times.push(last_event_time);
+        }
+        if let Some(last_rest_sync_at) = shadow.last_rest_sync_at {
+            times.push(last_rest_sync_at);
+        }
+        times.push(shadow.updated_at);
+    }
+    times.into_iter().max()
+}
+
+fn live_shadow_is_stale(
+    reconciliation: &LiveReconciliationStatus,
+    now_ms: i64,
+    stale_ms: i64,
+) -> bool {
+    live_shadow_freshness_at(reconciliation)
+        .map(|last| now_ms.saturating_sub(last) > stale_ms)
+        .unwrap_or(false)
+}
+
 fn parse_shadow_number(value: &str) -> f64 {
     value.parse::<f64>().unwrap_or_default()
 }
@@ -8082,16 +8214,16 @@ fn build_live_status(input: LiveStatusBuildInput<'_>) -> LiveStatusSnapshot {
     {
         blocking_reasons.push(LiveBlockingReason::ShadowStateAmbiguous);
     }
-    if reconciliation.stream.state == LiveShadowStreamState::Running
-        && reconciliation
-            .stream
-            .last_event_time
-            .map(|last| now_ms.saturating_sub(last) > options.live_shadow_stale_ms)
-            .unwrap_or(false)
-    {
-        warnings.push(LiveWarning::ShadowStreamStale);
-        blocking_reasons.push(LiveBlockingReason::ShadowStreamDown);
-        reconciliation.stream.stale = true;
+    let shadow_environment_matches =
+        !has_shadow_context || reconciliation.stream.environment == live_state.environment;
+    if reconciliation.stream.state == LiveShadowStreamState::Running && shadow_environment_matches {
+        let freshness_stale =
+            live_shadow_is_stale(&reconciliation, now_ms, options.live_shadow_stale_ms);
+        reconciliation.stream.stale = freshness_stale;
+        if freshness_stale {
+            warnings.push(LiveWarning::ShadowStreamStale);
+            blocking_reasons.push(LiveBlockingReason::ShadowStreamDown);
+        }
     }
     for reason in &reconciliation.blocking_reasons {
         if !blocking_reasons.contains(reason) {
@@ -8316,15 +8448,11 @@ fn build_execution_status(
         blocking.push(LiveBlockingReason::ShadowStateAmbiguous);
         warnings.push(LiveWarning::ShadowStreamStale);
     }
-    if reconciliation.stream.stale {
+    let shadow_freshness_stale = reconciliation.stream.state == LiveShadowStreamState::Running
+        && live_shadow_is_stale(reconciliation, now_ms, options.live_shadow_stale_ms);
+    if reconciliation.stream.stale || shadow_freshness_stale {
         blocking.push(LiveBlockingReason::StaleShadowState);
         warnings.push(LiveWarning::ShadowStreamStale);
-    }
-    if let Some(last_event) = reconciliation.stream.last_event_time {
-        if now_ms.saturating_sub(last_event) > options.live_shadow_stale_ms {
-            blocking.push(LiveBlockingReason::StaleShadowState);
-            warnings.push(LiveWarning::ShadowStreamStale);
-        }
     }
 
     match reconciliation.shadow.as_ref() {

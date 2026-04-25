@@ -6,7 +6,7 @@ use relxen_app::{
     AppMetadata, AppService, LiveDependencies, MarketDataPort, Repository, ServiceOptions,
 };
 use relxen_domain::{
-    mainnet_auto_live_confirmation_text, AsoMode, AsoPositionPolicy, Candle,
+    mainnet_auto_live_confirmation_text, AsoMode, AsoPositionPolicy, Candle, ConnectionStatus,
     CreateLiveCredentialRequest, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
     LiveBlockingReason, LiveCancelRequest, LiveCredentialValidationStatus, LiveEnvironment,
     LiveExecutionRequest, LiveFillRecord, LiveKillSwitchRequest, LiveMarginType, LiveOrderSide,
@@ -545,6 +545,35 @@ async fn live_status_account_snapshot_uses_fresh_shadow_positions() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn rest_shadow_refresh_marks_quiet_user_data_stream_fresh() {
+    let exchange = arc(FakeLiveExchange::default());
+    let service = live_shadow_service_with(
+        exchange,
+        Vec::new(),
+        ServiceOptions {
+            live_shadow_stale_ms: 20,
+            ..ServiceOptions::default()
+        },
+    )
+    .await;
+    create_valid_credential(&service).await;
+    service.start_live_shadow().await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let repaired = service.refresh_live_shadow().await.unwrap();
+    assert_eq!(
+        repaired.reconciliation.stream.state,
+        LiveShadowStreamState::Running
+    );
+    assert!(!repaired.reconciliation.stream.stale);
+    assert!(!repaired
+        .execution
+        .blocking_reasons
+        .contains(&LiveBlockingReason::StaleShadowState));
+    assert!(repaired.reconciliation.stream.last_rest_sync_at.is_some());
 }
 
 #[tokio::test]
@@ -2346,6 +2375,226 @@ async fn mainnet_auto_flat_stop_repairs_just_ack_market_fill_before_close() {
         })
         .unwrap_or_default();
     assert_eq!(amount, 0.0);
+    service.stop_runtime().await.unwrap();
+}
+
+#[tokio::test]
+async fn mainnet_auto_watchdog_repairs_quiet_shadow_before_stop() {
+    let mut fake = FakeLiveExchange {
+        auto_fill_market_orders: true,
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.position_policy = AsoPositionPolicy::AlwaysInMarket;
+    options.mainnet_auto_watchdog_interval_ms = 50;
+    options.live_shadow_stale_ms = 20;
+    options.mainnet_auto_market_data_stale_ms = 60_000;
+
+    let history_open_time = latest_closed_open_time(Timeframe::M1);
+    let history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time - 2 * Timeframe::M1.duration_ms(),
+            60.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time - Timeframe::M1.duration_ms(),
+            60.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time,
+            60.0,
+            true,
+        ),
+    ];
+    let (market, market_sender) = ChannelMarket::new(vec![history]);
+    let service =
+        mainnet_live_auto_service_with_market(exchange.clone(), arc(market), options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+    service.start_runtime().await.unwrap();
+    market_sender
+        .send(Ok(stream_event(
+            candle_with_bull_at_open_time(
+                Symbol::BtcUsdt,
+                Timeframe::M1,
+                history_open_time + Timeframe::M1.duration_ms(),
+                60.0,
+                true,
+            ),
+            true,
+        )))
+        .unwrap();
+    wait_for_runtime_market_message(&service).await;
+
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request_with_policy(
+            MainnetAutoAllowedMarginType::Isolated,
+            AsoPositionPolicy::AlwaysInMarket,
+        )))
+        .await
+        .unwrap();
+
+    let entry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if exchange.submitted_orders.lock().await.len() == 1 {
+            break;
+        }
+        if tokio::time::Instant::now() >= entry_deadline {
+            let status = service.mainnet_auto_status().await.unwrap();
+            let decisions = service.list_mainnet_auto_decisions(20).await.unwrap();
+            panic!("timed out waiting for entry before quiet-shadow repair; status={status:?} decisions={decisions:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.state, MainnetAutoState::LiveRunning);
+    assert_ne!(
+        status.last_watchdog_stop_reason,
+        Some(relxen_domain::MainnetAutoStopReason::ShadowStale)
+    );
+    assert_eq!(exchange.submitted_orders.lock().await.len(), 1);
+    let live_status = service.live_status().await.unwrap();
+    assert!(!live_status.reconciliation.stream.stale);
+
+    service.stop_mainnet_auto().await.unwrap();
+    service.stop_runtime().await.unwrap();
+}
+
+#[tokio::test]
+async fn mainnet_auto_watchdog_allows_transient_market_reconnect_inside_freshness_window() {
+    let mut fake = FakeLiveExchange {
+        auto_fill_market_orders: true,
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.position_policy = AsoPositionPolicy::AlwaysInMarket;
+    options.mainnet_auto_watchdog_interval_ms = 50;
+    options.mainnet_auto_market_data_stale_ms = 1_000;
+
+    let history_open_time = latest_closed_open_time(Timeframe::M1);
+    let history = vec![
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time - 2 * Timeframe::M1.duration_ms(),
+            60.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time - Timeframe::M1.duration_ms(),
+            60.0,
+            true,
+        ),
+        candle_with_bull_at_open_time(
+            Symbol::BtcUsdt,
+            Timeframe::M1,
+            history_open_time,
+            60.0,
+            true,
+        ),
+    ];
+    let (market, market_sender) = ChannelMarket::new(vec![history]);
+    let service =
+        mainnet_live_auto_service_with_market(exchange.clone(), arc(market), options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+    service.start_runtime().await.unwrap();
+    market_sender
+        .send(Ok(stream_event(
+            candle_with_bull_at_open_time(
+                Symbol::BtcUsdt,
+                Timeframe::M1,
+                history_open_time + Timeframe::M1.duration_ms(),
+                60.0,
+                true,
+            ),
+            true,
+        )))
+        .unwrap();
+    wait_for_runtime_market_message(&service).await;
+
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request_with_policy(
+            MainnetAutoAllowedMarginType::Isolated,
+            AsoPositionPolicy::AlwaysInMarket,
+        )))
+        .await
+        .unwrap();
+
+    let entry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if exchange.submitted_orders.lock().await.len() == 1 {
+            break;
+        }
+        if tokio::time::Instant::now() >= entry_deadline {
+            let status = service.mainnet_auto_status().await.unwrap();
+            let decisions = service.list_mainnet_auto_decisions(20).await.unwrap();
+            panic!("timed out waiting for entry before transient reconnect; status={status:?} decisions={decisions:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    drop(market_sender);
+    let reconnect_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let snapshot = service.get_bootstrap().await.unwrap();
+        if snapshot.connection_state.status == ConnectionStatus::Reconnecting {
+            break;
+        }
+        if tokio::time::Instant::now() >= reconnect_deadline {
+            panic!("timed out waiting for transient reconnect state");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.state, MainnetAutoState::LiveRunning);
+    assert_ne!(
+        status.last_watchdog_stop_reason,
+        Some(relxen_domain::MainnetAutoStopReason::MarketDataStale)
+    );
+    assert_eq!(exchange.submitted_orders.lock().await.len(), 1);
+
+    service.stop_mainnet_auto().await.unwrap();
     service.stop_runtime().await.unwrap();
 }
 
