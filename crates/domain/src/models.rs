@@ -508,6 +508,7 @@ impl MainnetAutoRunMode {
 #[serde(rename_all = "snake_case")]
 pub enum MainnetAutoStopReason {
     KillSwitchEngaged,
+    MarketDataStale,
     ShadowStale,
     UserDataStreamDown,
     AccountSnapshotStale,
@@ -536,6 +537,7 @@ impl MainnetAutoStopReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::KillSwitchEngaged => "kill_switch_engaged",
+            Self::MarketDataStale => "market_data_stale",
             Self::ShadowStale => "shadow_stale",
             Self::UserDataStreamDown => "user_data_stream_down",
             Self::AccountSnapshotStale => "account_snapshot_stale",
@@ -568,6 +570,7 @@ pub enum MainnetAutoDecisionOutcome {
     SignalSeen,
     SkippedUnfinishedCandle,
     SkippedDuplicate,
+    SkippedStaleMarketData,
     SkippedStalePreview,
     SkippedStaleReferencePrice,
     SkippedStaleShadow,
@@ -589,6 +592,7 @@ impl MainnetAutoDecisionOutcome {
             Self::SignalSeen => "signal_seen",
             Self::SkippedUnfinishedCandle => "skipped_unfinished_candle",
             Self::SkippedDuplicate => "skipped_duplicate",
+            Self::SkippedStaleMarketData => "skipped_stale_market_data",
             Self::SkippedStalePreview => "skipped_stale_preview",
             Self::SkippedStaleReferencePrice => "skipped_stale_reference_price",
             Self::SkippedStaleShadow => "skipped_stale_shadow",
@@ -1573,8 +1577,12 @@ impl Default for MainnetAutoConfig {
 
 pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M: &str = "START MAINNET AUTO LIVE BTCUSDT 15M";
 pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_60M: &str = "START MAINNET AUTO LIVE BTCUSDT 60M";
+pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_OPERATOR_STOP: &str =
+    "START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP";
 pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT: &str = MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M;
-pub const MAINNET_AUTO_ALLOWED_RUNTIME_MINUTES: [u64; 2] = [15, 60];
+pub const MAINNET_AUTO_OPERATOR_STOP_RUNTIME_MINUTES: u64 = 0;
+pub const MAINNET_AUTO_ALLOWED_RUNTIME_MINUTES: [u64; 3] =
+    [MAINNET_AUTO_OPERATOR_STOP_RUNTIME_MINUTES, 15, 60];
 
 pub fn mainnet_auto_live_runtime_allowed(minutes: u64) -> bool {
     MAINNET_AUTO_ALLOWED_RUNTIME_MINUTES.contains(&minutes)
@@ -1582,6 +1590,9 @@ pub fn mainnet_auto_live_runtime_allowed(minutes: u64) -> bool {
 
 pub fn mainnet_auto_live_confirmation_text(minutes: u64) -> Option<&'static str> {
     match minutes {
+        MAINNET_AUTO_OPERATOR_STOP_RUNTIME_MINUTES => {
+            Some(MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_OPERATOR_STOP)
+        }
         15 => Some(MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_15M),
         60 => Some(MAINNET_AUTO_LIVE_CONFIRMATION_TEXT_60M),
         _ => None,

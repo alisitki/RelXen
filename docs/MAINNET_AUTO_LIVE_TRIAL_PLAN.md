@@ -4,10 +4,16 @@
 
 Mainnet Auto Live Support v1 is implemented as a gated code path and the first explicit live session was started on 2026-04-25.
 
-Live MAINNET auto remains disabled by default. The operator-start command surface is prepared for repeat 15-minute batches only after rechecking every gate. The helper accepts the explicit v1 risk flags, verifies the running server is already in session-scoped live mode, configures the bounded risk budget, and then submits the existing typed start request. Use the exact session-level confirmation:
+Live MAINNET auto remains disabled by default. The operator-start command surface is prepared for explicit session-scoped batches only after rechecking every gate. The helper accepts the explicit v1 risk flags, verifies the running server is already in session-scoped live mode, configures the risk budget, and then submits the existing typed start request. Use the exact session-level confirmation for the chosen runtime:
 
 ```text
 START MAINNET AUTO LIVE BTCUSDT 15M
+```
+
+For operator-stop runtime, use:
+
+```text
+START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP
 ```
 
 First run result:
@@ -23,7 +29,7 @@ The second `always_in_market` run on 2026-04-25 submitted and filled one real LO
 
 ## Session Design
 
-- Runtime: 15 minutes hard stop.
+- Runtime: fixed `15` / `60` minute hard stop, or explicit `0` operator-stop runtime. In operator-stop runtime, `expires_at` is unset and only the fixed max-runtime stop is removed; all other watchdog/risk stops remain active.
 - Symbol: `BTCUSDT` only.
 - Order type: `MARKET` only for v1 live auto, matching the existing TESTNET auto execution path.
 - Strategy: ASO closed-candle signals only.
@@ -88,6 +94,8 @@ RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD=5 \
 RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD=55 \
 cargo run -p relxen-server
 ```
+
+For an operator-stop session, set `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=0` in the server environment and use `--duration-minutes operator-stop` plus confirmation `START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP` in the helper. The server config, helper argument, and risk budget must match.
 
 Terminal 2, run the safe precheck against that server:
 

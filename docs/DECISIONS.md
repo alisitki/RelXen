@@ -170,6 +170,26 @@ The operator-stopped 2026-04-25 `flat_allowed` live run showed that an auto-owne
 
 The same run showed the public kline runtime can remain in `opening Binance kline stream` without producing a first candle event. Runtime subscribe and first-event waits now time out after 15 seconds, record a reconnect/error state, and retry instead of staying silently stuck. This is an observability/safety hardening change only; it does not add a new signal, indicator, strategy rule, symbol, or order type.
 
+### MAINNET auto requires fresh market data before and during exposure
+
+The disabled-live-auto kline smoke showed that Binance REST history can be fresh while the WebSocket kline stream needs multiple reconnect attempts before its first usable event. MAINNET auto no longer treats bootstrap history alone as enough for policy entry: policy-driven entry waits for fresh runtime market data, the headless live helper starts the public runtime and waits up to 120 seconds for fresh BTCUSDT stream/closed-candle evidence before calling the live-start endpoint, and the session watchdog stops with `market_data_stale` and uses the existing reduce-only flat-stop path if fresh market data is lost during a live session. Closed-candle freshness is timeframe-aware: the latest closed candle may be up to one active timeframe plus the stale-data grace old, while stream message freshness still uses the tighter stale-data grace. This is a safety gate around data freshness, not a change to ASO strategy logic.
+
 ### Mainnet auto leverage budget hard cap is 100x
 
 The explicit MAINNET auto leverage budget may now be configured up to `100x`; values above `100x` are rejected. The start gate still requires active-symbol exchange leverage to be no higher than the configured session budget, and RelXen still does not add an exchange leverage-adjustment endpoint. This is a gate change, not a recommendation to use high leverage.
+
+### Operator-stop MAINNET auto runtime is explicit and default-off
+
+The operator requested a live run shape that does not stop by a fixed 15-minute or 60-minute max-runtime watchdog. RelXen now represents that as the explicit runtime value `0`, meaning `operator_stop`: `expires_at` is left unset and the max-runtime watchdog stop is disabled for that session only. This mode requires the exact confirmation `START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP`, the running server config `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=0`, and a matching risk budget/start request. It does not change default-off live-auto behavior and does not relax kill switch, max loss, order/fill caps, flat-start/flat-stop, margin-type, fresh market-data, shadow, reconciliation, evidence, or lesson-report gates.
+
+### Do not repeat operator-stop live run after stale-data stop without repair hardening
+
+The 2026-04-25 `5m` `always_in_market` operator-stop live attempt showed that a just-ACKed `MARKET` order can remain locally `accepted` until REST repair even though the exchange has filled it, and that the current `5m` closed-candle freshness watchdog can stop the session shortly after entry when no newer closed candle has reconciled yet. The system must not simply restart the same live run shape after this condition. The next implementation step is to harden pre-stop repair/classification for just-ACKed market orders and tune `5m` market-data freshness/reconnect behavior before another operator-stop live attempt.
+
+### Stale closed-candle stop may repair only a small proved gap
+
+MAINNET auto now tries a bounded REST kline repair before stopping for `market_data_closed_candle_stale`, but only when the stream itself is connected/resynced and the missing closed-candle gap is three candles or fewer. The recovered candles must exactly match the active symbol/timeframe, be closed, and be contiguous. Incomplete, non-contiguous, too-large, missing-anchor, disconnected-stream, or stale-stream cases still fail closed and stop/flat according to the existing watchdog policy. This keeps `5m` sessions from stopping only because a small closed-candle gap is recoverable, without turning stale market data into an unsafe allow condition.
+
+### Auto flat-stop repairs ACK-only MARKET orders before classifying open-order blockers
+
+Before MAINNET auto submits an auto-owned reduce-only close for flat-stop or reverse, it refreshes the live shadow and runs the bounded recent-window order repair path. This lets an ACK-only `MARKET` order that has already filled on the exchange reconcile to a terminal local state before the flat-stop logic checks for unexpected open orders. If refresh and repair both fail, the existing repository snapshot is still used and the close remains fail-closed on ambiguity. This changes stop/reverse reconciliation only; it does not add a public mainnet bypass, new strategy logic, conditional orders, or broader symbol scope.

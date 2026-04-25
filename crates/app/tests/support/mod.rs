@@ -1217,6 +1217,70 @@ impl MarketDataPort for SequenceMarket {
     }
 }
 
+pub struct ChannelMarket {
+    pub range_called: AtomicUsize,
+    pub subscribe_called: AtomicUsize,
+    range_fetches: Mutex<VecDeque<Vec<Candle>>>,
+    range_requests: Mutex<Vec<KlineRangeRequest>>,
+    receiver: Mutex<Option<mpsc::UnboundedReceiver<Result<MarketStreamEvent, AppError>>>>,
+}
+
+impl ChannelMarket {
+    pub fn new(
+        range_fetches: Vec<Vec<Candle>>,
+    ) -> (
+        Self,
+        mpsc::UnboundedSender<Result<MarketStreamEvent, AppError>>,
+    ) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                range_called: AtomicUsize::new(0),
+                subscribe_called: AtomicUsize::new(0),
+                range_fetches: Mutex::new(range_fetches.into()),
+                range_requests: Mutex::new(Vec::new()),
+                receiver: Mutex::new(Some(receiver)),
+            },
+            sender,
+        )
+    }
+
+    pub async fn range_requests(&self) -> Vec<KlineRangeRequest> {
+        self.range_requests.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl MarketDataPort for ChannelMarket {
+    async fn fetch_klines_range(&self, request: KlineRangeRequest) -> AppResult<Vec<Candle>> {
+        self.range_called.fetch_add(1, Ordering::SeqCst);
+        self.range_requests.lock().await.push(request);
+        Ok(self
+            .range_fetches
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or_default())
+    }
+
+    async fn subscribe_klines(
+        &self,
+        _symbol: Symbol,
+        _timeframe: Timeframe,
+    ) -> AppResult<MarketStream> {
+        self.subscribe_called.fetch_add(1, Ordering::SeqCst);
+        let receiver = self.receiver.lock().await.take();
+        let stream = match receiver {
+            Some(receiver) => stream::unfold(receiver, |mut receiver| async {
+                receiver.recv().await.map(|event| (event, receiver))
+            })
+            .boxed(),
+            None => stream::pending().boxed(),
+        };
+        Ok(Box::pin(stream))
+    }
+}
+
 pub struct StaticMetrics;
 
 impl MetricsPort for StaticMetrics {

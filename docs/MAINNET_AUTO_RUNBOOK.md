@@ -130,7 +130,7 @@ Do not start live MAINNET auto in normal operation. Mainnet Auto Live Support v1
 
 - `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`
 - `RELXEN_MAINNET_AUTO_MODE=live`
-- explicit operator arm/start command and strong confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`
+- explicit operator arm/start command and strong confirmation for the selected runtime, for example `START MAINNET AUTO LIVE BTCUSDT 15M` or `START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP`
 - validated MAINNET credential
 - fresh account, rules, shadow, user-data, and reference price
 - flat start if required by risk budget
@@ -143,6 +143,8 @@ Do not start live MAINNET auto in normal operation. Mainnet Auto Live Support v1
 - lesson-report output initialized
 - kill switch released
 - watchdog running
+
+`RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=0` is the explicit operator-stop runtime. It leaves `expires_at` unset and removes only the fixed max-runtime stop for that session; kill switch, max loss, max order/fill caps, flat-start/flat-stop, margin type, market-data freshness, shadow/reconciliation, evidence, and lesson gates still apply. The server config, helper flag, risk budget, and confirmation text must all match.
 
 If any input is missing, stale, ambiguous, or invalid, live start must fail closed and no order may be submitted.
 
@@ -169,6 +171,8 @@ RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD=5 \
 RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD=55 \
 cargo run -p relxen-server
 ```
+
+For an operator-stop run, use `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES=0` in both the server and helper environments and confirm with `START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP`.
 
 Operator live trial command, only after `--precheck` is clean:
 

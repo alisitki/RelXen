@@ -56,7 +56,11 @@ use crate::ports::{
 use crate::{AppError, AppResult};
 
 const MAINNET_AUTO_EVIDENCE_SETTLEMENT_GRACE_MS: i64 = 30_000;
+const MAINNET_AUTO_MARKET_DATA_REPAIR_MAX_CANDLES: usize = 3;
 const MARKET_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_MAINNET_AUTO_WATCHDOG_INTERVAL_MS: u64 = 5_000;
+const DEFAULT_MAINNET_AUTO_MARKET_DATA_STALE_MS: i64 = 90_000;
+const DEFAULT_MAINNET_AUTO_MARKET_DATA_STARTUP_GRACE_MS: i64 = 20_000;
 
 #[derive(Debug, Clone)]
 pub struct ServiceOptions {
@@ -79,6 +83,9 @@ pub struct ServiceOptions {
     pub mainnet_auto_config: MainnetAutoConfig,
     pub live_user_stream_forced_reconnect_ms: i64,
     pub live_repair_recent_window_limit: usize,
+    pub mainnet_auto_watchdog_interval_ms: u64,
+    pub mainnet_auto_market_data_stale_ms: i64,
+    pub mainnet_auto_market_data_startup_grace_ms: i64,
 }
 
 #[derive(Clone, Default)]
@@ -165,6 +172,10 @@ impl Default for ServiceOptions {
             mainnet_auto_config: MainnetAutoConfig::default(),
             live_user_stream_forced_reconnect_ms: 24 * 60 * 60 * 1_000,
             live_repair_recent_window_limit: 100,
+            mainnet_auto_watchdog_interval_ms: DEFAULT_MAINNET_AUTO_WATCHDOG_INTERVAL_MS,
+            mainnet_auto_market_data_stale_ms: DEFAULT_MAINNET_AUTO_MARKET_DATA_STALE_MS,
+            mainnet_auto_market_data_startup_grace_ms:
+                DEFAULT_MAINNET_AUTO_MARKET_DATA_STARTUP_GRACE_MS,
         }
     }
 }
@@ -1868,14 +1879,18 @@ impl AppService {
 
         let request = request.expect("checked above");
         let session_id = format!("mnauto_live_{}", Uuid::new_v4().simple());
-        let expires_at = now + (request.duration_minutes as i64) * 60_000;
+        let expires_at = if request.duration_minutes == 0 {
+            None
+        } else {
+            Some(now + (request.duration_minutes as i64) * 60_000)
+        };
         let evidence_path = self.initialize_mainnet_auto_evidence_dir(&session_id, now)?;
         status.state = MainnetAutoState::LiveRunning;
         status.mode = status.config.mode;
         status.risk_budget = risk_budget;
         status.session_id = Some(session_id.clone());
         status.started_at = Some(now);
-        status.expires_at = Some(expires_at);
+        status.expires_at = expires_at;
         status.stopped_at = None;
         status.last_heartbeat_at = Some(now);
         status.last_watchdog_stop_reason = None;
@@ -1902,12 +1917,26 @@ impl AppService {
             duration_minutes = request.duration_minutes,
             "MAINNET auto live session started; orders remain gated per signal"
         );
-        self.spawn_mainnet_auto_runtime_watchdog(session_id, expires_at);
-        let latest_policy_point = self.state.lock().await.aso_points.last().cloned();
-        if let Some(point) = latest_policy_point {
-            let _ = self.maybe_mainnet_auto_evaluate_aso_policy(point).await;
+        self.spawn_mainnet_auto_runtime_watchdog(session_id.clone(), expires_at);
+        if self
+            .mainnet_auto_market_data_blocker_with_repair(now_ms(), false)
+            .await
+            .is_none()
+        {
+            let latest_policy_point = self.state.lock().await.aso_points.last().cloned();
+            if let Some(point) = latest_policy_point {
+                let _ = self.maybe_mainnet_auto_evaluate_aso_policy(point).await;
+            }
+        } else {
+            let _ = self
+                .record_mainnet_auto_watchdog_heartbeat(
+                    &session_id,
+                    now_ms(),
+                    "MAINNET auto live watchdog running; waiting for fresh market data.",
+                )
+                .await;
         }
-        Ok(status)
+        self.mainnet_auto_status().await
     }
 
     pub async fn stop_mainnet_auto(&self) -> AppResult<MainnetAutoStatus> {
@@ -3130,7 +3159,27 @@ impl AppService {
             });
         }
 
-        let status = self.refresh_live_status_from_repository().await?;
+        let status = match self.refresh_live_shadow().await {
+            Ok(status) => status,
+            Err(error) => {
+                warn!(
+                    event = "mainnet_auto_close_prerepair_failed",
+                    detail = %error,
+                    "MAINNET auto close could not refresh shadow and repair recent execution before close"
+                );
+                match self.repair_live_execution_recent_window().await {
+                    Ok(status) => status,
+                    Err(repair_error) => {
+                        warn!(
+                            event = "mainnet_auto_close_prerepair_failed",
+                            detail = %repair_error,
+                            "MAINNET auto close recent-window repair failed before close"
+                        );
+                        self.refresh_live_status_from_repository().await?
+                    }
+                }
+            }
+        };
         if status.environment != LiveEnvironment::Mainnet {
             return Ok(MainnetAutoClosePositionResult {
                 accepted: false,
@@ -3489,6 +3538,9 @@ impl AppService {
         }
         if !mainnet_auto_live_runtime_allowed(request.duration_minutes) {
             blockers.push("mainnet_auto_duration_not_allowed".to_string());
+        }
+        if request.duration_minutes != self.options.mainnet_auto_config.max_runtime_minutes {
+            blockers.push("mainnet_auto_duration_config_mismatch".to_string());
         }
         if request.order_type != LiveOrderType::Market {
             blockers.push("mainnet_auto_order_type_not_market".to_string());
@@ -3858,32 +3910,348 @@ impl AppService {
         })
     }
 
-    fn spawn_mainnet_auto_runtime_watchdog(self: &Arc<Self>, session_id: String, expires_at: i64) {
+    fn spawn_mainnet_auto_runtime_watchdog(
+        self: &Arc<Self>,
+        session_id: String,
+        expires_at: Option<i64>,
+    ) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            let now = now_ms();
-            if expires_at > now {
-                sleep(Duration::from_millis((expires_at - now) as u64)).await;
-            }
-            let status = match service.load_mainnet_auto_status_with_config().await {
-                Ok(status) => status,
-                Err(error) => {
+            let interval_ms = service.options.mainnet_auto_watchdog_interval_ms.max(100);
+            loop {
+                sleep(Duration::from_millis(interval_ms)).await;
+                let now = now_ms();
+                let status = match service.load_mainnet_auto_status_with_config().await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        warn!(
+                            event = "watchdog_check_failed",
+                            detail = %error,
+                            "failed to load MAINNET auto status for runtime watchdog"
+                        );
+                        return;
+                    }
+                };
+                if status.state != MainnetAutoState::LiveRunning
+                    || status.session_id.as_deref() != Some(session_id.as_str())
+                {
+                    return;
+                }
+                if expires_at.is_some_and(|expires_at| now >= expires_at) {
+                    let _ = service
+                        .stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxRuntimeReached)
+                        .await;
+                    return;
+                }
+
+                let position_open =
+                    service
+                        .live_status()
+                        .await
+                        .ok()
+                        .as_ref()
+                        .is_some_and(|live_status| {
+                            current_mainnet_position_side(live_status, Symbol::BtcUsdt)
+                                != MainnetAutoDesiredSide::None
+                        });
+                let allow_startup_grace = !position_open
+                    && status.started_at.is_some_and(|started_at| {
+                        now.saturating_sub(started_at)
+                            <= service.options.mainnet_auto_market_data_startup_grace_ms
+                    });
+                if let Some(blocker) = service
+                    .mainnet_auto_market_data_blocker_with_repair(now, allow_startup_grace)
+                    .await
+                {
+                    warn!(
+                        event = "mainnet_auto_market_data_stale",
+                        session_id = %session_id,
+                        blocker = %blocker,
+                        position_open,
+                        "MAINNET auto watchdog stopping session because market data is not fresh"
+                    );
+                    let _ = service
+                        .stop_mainnet_auto_with_reason(MainnetAutoStopReason::MarketDataStale)
+                        .await;
+                    return;
+                }
+
+                if let Err(error) = service
+                    .record_mainnet_auto_watchdog_heartbeat(
+                        &session_id,
+                        now,
+                        "MAINNET auto live watchdog running; market data fresh.",
+                    )
+                    .await
+                {
                     warn!(
                         event = "watchdog_check_failed",
                         detail = %error,
-                        "failed to load MAINNET auto status for runtime watchdog"
+                        "failed to persist MAINNET auto watchdog heartbeat"
                     );
-                    return;
                 }
-            };
-            if status.state == MainnetAutoState::LiveRunning
-                && status.session_id.as_deref() == Some(session_id.as_str())
-            {
-                let _ = service
-                    .stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxRuntimeReached)
-                    .await;
             }
         });
+    }
+
+    async fn record_mainnet_auto_watchdog_heartbeat(
+        &self,
+        session_id: &str,
+        now: i64,
+        message: &str,
+    ) -> AppResult<()> {
+        let mut status = self.load_mainnet_auto_status_with_config().await?;
+        if status.state != MainnetAutoState::LiveRunning
+            || status.session_id.as_deref() != Some(session_id)
+        {
+            return Ok(());
+        }
+        status.watchdog.running = true;
+        status.watchdog.last_check_at = Some(now);
+        status.watchdog.last_message = Some(message.to_string());
+        status.last_heartbeat_at = Some(now);
+        status.updated_at = now;
+        self.repository.save_mainnet_auto_status(&status).await
+    }
+
+    async fn mainnet_auto_market_data_blocker(
+        &self,
+        now: i64,
+        allow_startup_grace: bool,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        let runtime = &state.runtime_status;
+        let in_startup_grace = allow_startup_grace
+            && runtime.started_at.is_some_and(|started_at| {
+                now.saturating_sub(started_at)
+                    <= self.options.mainnet_auto_market_data_startup_grace_ms
+            });
+        if !runtime.running {
+            return if in_startup_grace {
+                None
+            } else {
+                Some("market_data_runtime_not_running".to_string())
+            };
+        }
+        if runtime.active_symbol != Symbol::BtcUsdt
+            || state.settings.active_symbol != Symbol::BtcUsdt
+        {
+            return Some("market_data_symbol_not_btcusdt".to_string());
+        }
+        if !matches!(
+            state.connection_state.status,
+            ConnectionStatus::Connected | ConnectionStatus::Resynced
+        ) {
+            return if in_startup_grace {
+                None
+            } else {
+                Some(
+                    match state.connection_state.status {
+                        ConnectionStatus::Reconnecting => "market_data_stream_reconnecting",
+                        ConnectionStatus::Stale => "market_data_stream_stale",
+                        ConnectionStatus::Disconnected => "market_data_stream_disconnected",
+                        ConnectionStatus::Connected | ConnectionStatus::Resynced => {
+                            "market_data_stream_unknown"
+                        }
+                    }
+                    .to_string(),
+                )
+            };
+        }
+
+        let stale_ms = self.options.mainnet_auto_market_data_stale_ms.max(1);
+        let Some(last_message_time) = state.connection_state.last_message_time else {
+            return if in_startup_grace {
+                None
+            } else {
+                Some("market_data_stream_no_messages".to_string())
+            };
+        };
+        if now.saturating_sub(last_message_time) > stale_ms {
+            return Some("market_data_stream_stale".to_string());
+        }
+
+        let latest_closed = state.candles.iter().rev().find(|candle| {
+            candle.symbol == Symbol::BtcUsdt
+                && candle.timeframe == runtime.timeframe
+                && candle.closed
+        });
+        let Some(latest_closed) = latest_closed else {
+            return if in_startup_grace {
+                None
+            } else {
+                Some("market_data_closed_candle_missing".to_string())
+            };
+        };
+        let closed_candle_stale_ms = runtime.timeframe.duration_ms().saturating_add(stale_ms);
+        if now.saturating_sub(latest_closed.close_time) > closed_candle_stale_ms {
+            return Some("market_data_closed_candle_stale".to_string());
+        }
+
+        None
+    }
+
+    async fn mainnet_auto_market_data_blocker_with_repair(
+        &self,
+        now: i64,
+        allow_startup_grace: bool,
+    ) -> Option<String> {
+        let blocker = self
+            .mainnet_auto_market_data_blocker(now, allow_startup_grace)
+            .await;
+        if blocker.as_deref() != Some("market_data_closed_candle_stale") {
+            return blocker;
+        }
+
+        match self.repair_mainnet_auto_closed_candle_gap(now).await {
+            Ok(true) => {
+                self.mainnet_auto_market_data_blocker(now_ms(), allow_startup_grace)
+                    .await
+            }
+            Ok(false) => blocker,
+            Err(error) => {
+                warn!(
+                    event = "mainnet_auto_market_data_repair_failed",
+                    detail = %error,
+                    "MAINNET auto could not repair stale closed-candle market data"
+                );
+                blocker
+            }
+        }
+    }
+
+    async fn repair_mainnet_auto_closed_candle_gap(&self, now: i64) -> AppResult<bool> {
+        let request = {
+            let state = self.state.lock().await;
+            let runtime = &state.runtime_status;
+            if !runtime.running
+                || runtime.active_symbol != Symbol::BtcUsdt
+                || state.settings.active_symbol != Symbol::BtcUsdt
+                || !matches!(
+                    state.connection_state.status,
+                    ConnectionStatus::Connected | ConnectionStatus::Resynced
+                )
+            {
+                return Ok(false);
+            }
+
+            let timeframe = runtime.timeframe;
+            let Some(latest_closed) = state.candles.iter().rev().find(|candle| {
+                candle.symbol == Symbol::BtcUsdt && candle.timeframe == timeframe && candle.closed
+            }) else {
+                return Ok(false);
+            };
+            let target_latest_closed_open_time =
+                timeframe.align_open_time(now.saturating_sub(timeframe.duration_ms()));
+            let fetch_start_open_time = timeframe.next_open_time(latest_closed.open_time);
+            if fetch_start_open_time > target_latest_closed_open_time {
+                return Ok(false);
+            }
+            let gap_closed_candles = timeframe
+                .count_open_times_between(fetch_start_open_time, target_latest_closed_open_time);
+            if gap_closed_candles == 0
+                || gap_closed_candles > MAINNET_AUTO_MARKET_DATA_REPAIR_MAX_CANDLES
+            {
+                warn!(
+                    event = "mainnet_auto_market_data_repair_skipped",
+                    symbol = %Symbol::BtcUsdt,
+                    timeframe = %timeframe,
+                    gap_closed_candles,
+                    max_repair_candles = MAINNET_AUTO_MARKET_DATA_REPAIR_MAX_CANDLES,
+                    "MAINNET auto closed-candle gap is outside bounded repair"
+                );
+                return Ok(false);
+            }
+
+            KlineRangeRequest {
+                symbol: Symbol::BtcUsdt,
+                timeframe,
+                start_open_time: fetch_start_open_time,
+                end_open_time: target_latest_closed_open_time,
+            }
+        };
+
+        let gap_closed_candles = request
+            .timeframe
+            .count_open_times_between(request.start_open_time, request.end_open_time);
+        info!(
+            event = "mainnet_auto_market_data_repair_started",
+            symbol = %request.symbol,
+            timeframe = %request.timeframe,
+            start_open_time = request.start_open_time,
+            end_open_time = request.end_open_time,
+            gap_closed_candles,
+            "MAINNET auto repairing stale closed-candle gap before stopping"
+        );
+
+        let recovered = self.market_data.fetch_klines_range(request).await?;
+        let mut recovered_closed: Vec<Candle> = recovered
+            .into_iter()
+            .filter(|candle| {
+                candle.symbol == request.symbol
+                    && candle.timeframe == request.timeframe
+                    && candle.closed
+                    && candle.open_time >= request.start_open_time
+                    && candle.open_time <= request.end_open_time
+            })
+            .collect();
+        recovered_closed.sort_by_key(|candle| candle.open_time);
+        recovered_closed.dedup_by_key(|candle| candle.open_time);
+
+        if recovered_closed.len() != gap_closed_candles {
+            warn!(
+                event = "mainnet_auto_market_data_repair_incomplete",
+                symbol = %request.symbol,
+                timeframe = %request.timeframe,
+                expected_closed_candles = gap_closed_candles,
+                recovered_closed_candles = recovered_closed.len(),
+                "MAINNET auto closed-candle gap repair returned incomplete data"
+            );
+            return Ok(false);
+        }
+
+        let mut expected_open_time = request.start_open_time;
+        for candle in &recovered_closed {
+            if candle.open_time != expected_open_time {
+                warn!(
+                    event = "mainnet_auto_market_data_repair_noncontiguous",
+                    symbol = %request.symbol,
+                    timeframe = %request.timeframe,
+                    expected_open_time,
+                    actual_open_time = candle.open_time,
+                    "MAINNET auto closed-candle gap repair was not contiguous"
+                );
+                return Ok(false);
+            }
+            expected_open_time = request.timeframe.next_open_time(expected_open_time);
+        }
+
+        let recovered_len = recovered_closed.len();
+        for candle in recovered_closed {
+            Box::pin(self.process_market_event(
+                MarketStreamEvent {
+                    candle,
+                    closed: true,
+                },
+                MarketEventOrigin::Recovery,
+            ))
+            .await?;
+        }
+        self.update_connection_state(
+            ConnectionStatus::Resynced,
+            0,
+            false,
+            format!("mainnet auto repaired {recovered_len} stale closed candle(s)"),
+        )
+        .await;
+        info!(
+            event = "mainnet_auto_market_data_repair_finished",
+            symbol = %request.symbol,
+            timeframe = %request.timeframe,
+            recovered_closed_candles = recovered_len,
+            "MAINNET auto repaired stale closed-candle gap"
+        );
+        Ok(true)
     }
 
     async fn record_mainnet_auto_dry_run_decision(
@@ -6266,6 +6634,25 @@ impl AppService {
             .await?;
             return Ok(());
         }
+        if let Some(blocker) = self
+            .mainnet_auto_market_data_blocker_with_repair(now, false)
+            .await
+        {
+            self.append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                session_id: &session_id,
+                outcome: MainnetAutoDecisionOutcome::SkippedStaleMarketData,
+                signal: &signal,
+                reference: None,
+                blocking_reasons: vec![blocker],
+                would_submit: false,
+                message: "MAINNET auto stopped before submit because market data was not fresh.",
+                policy_decision: policy_decision_override.clone(),
+            })
+            .await?;
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::MarketDataStale)
+                .await?;
+            return Ok(());
+        }
 
         let risk_budget = self.mainnet_auto_risk_budget().await?;
         if auto_status.live_orders_submitted >= auto_status.config.max_orders
@@ -6754,6 +7141,7 @@ impl AppService {
             }
             state.connection_state.last_message_time = Some(now_ms());
             state.connection_state.resync_required = false;
+            state.runtime_status.last_error = None;
 
             let already_closed_processed = state
                 .candles

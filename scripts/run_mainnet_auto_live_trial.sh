@@ -20,7 +20,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: run_mainnet_auto_live_trial.sh \
   --symbol BTCUSDT \
-  --duration-minutes 15|60 \
+  --duration-minutes 0|15|60|operator-stop \
   --max-leverage 100 \
   --max-notional 80 \
   --max-session-loss-usdt 5 \
@@ -29,7 +29,7 @@ usage: run_mainnet_auto_live_trial.sh \
   --position-policy crossover_only \
   --aso-delta-threshold 5 \
   --aso-zone-threshold 55 \
-  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M|60M"
+  --confirm "START MAINNET AUTO LIVE BTCUSDT 15M|60M|OPERATOR STOP"
 USAGE
 }
 
@@ -130,6 +130,12 @@ if [[ "${RELXEN_MAINNET_AUTO_MODE:-dry_run}" != "live" ]]; then
   exit 2
 fi
 
+case "${DURATION_MINUTES,,}" in
+  operator-stop|operator_stop|until-stop|until_stop|manual-stop|manual_stop|none)
+    DURATION_MINUTES="0"
+    ;;
+esac
+
 if [[ ! "$DURATION_MINUTES" =~ ^[0-9]+$ || ! "$MAX_ORDERS" =~ ^[0-9]+$ || ! "$MAX_FILLS" =~ ^[0-9]+$ ]]; then
   echo "Refusing to start live trial: duration, max-orders, and max-fills must be integer values." >&2
   exit 2
@@ -141,10 +147,11 @@ if [[ "$SYMBOL" != "BTCUSDT" || "$ORDER_TYPE" != "MARKET" ]]; then
 fi
 
 case "$DURATION_MINUTES" in
+  0) REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP" ;;
   15) REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 15M" ;;
   60) REQUIRED_CONFIRMATION="START MAINNET AUTO LIVE BTCUSDT 60M" ;;
   *)
-  echo "Refusing to start live trial: v1 supports 15 or 60 minutes only." >&2
+  echo "Refusing to start live trial: v1 supports 0/operator-stop, 15, or 60 minutes only." >&2
   exit 2
   ;;
 esac
@@ -185,6 +192,7 @@ fi
 auto_status="$(curl -fsS "$BASE_URL/api/live/mainnet-auto/status")"
 server_live_enabled="$(jq -r '.config.enable_live_execution // false' <<<"$auto_status")"
 server_mode="$(jq -r '.mode // "unknown"' <<<"$auto_status")"
+server_max_runtime_minutes="$(jq -r '.config.max_runtime_minutes // "15"' <<<"$auto_status")"
 server_allowed_margin_type="$(jq -r '.config.allowed_margin_type // "isolated"' <<<"$auto_status")"
 server_position_policy="$(jq -r '.config.position_policy // "crossover_only"' <<<"$auto_status")"
 server_aso_delta_threshold="$(jq -r '.config.aso_delta_threshold // "5"' <<<"$auto_status")"
@@ -196,18 +204,71 @@ if [[ "$server_live_enabled" != "true" || "$server_mode" != "live" ]]; then
   exit 2
 fi
 
-if [[ "$server_allowed_margin_type" != "$ALLOWED_MARGIN_TYPE" || "$server_position_policy" != "$POSITION_POLICY" || "$server_aso_delta_threshold" != "$ASO_DELTA_THRESHOLD" || "$server_aso_zone_threshold" != "$ASO_ZONE_THRESHOLD" ]]; then
+if [[ "$server_max_runtime_minutes" != "$DURATION_MINUTES" || "$server_allowed_margin_type" != "$ALLOWED_MARGIN_TYPE" || "$server_position_policy" != "$POSITION_POLICY" || "$server_aso_delta_threshold" != "$ASO_DELTA_THRESHOLD" || "$server_aso_zone_threshold" != "$ASO_ZONE_THRESHOLD" ]]; then
   echo "Refusing to start live trial: script policy flags must match the running server config." >&2
-  echo "Server allowed_margin_type=$server_allowed_margin_type position_policy=$server_position_policy aso_delta_threshold=$server_aso_delta_threshold aso_zone_threshold=$server_aso_zone_threshold" >&2
-  echo "Script allowed_margin_type=$ALLOWED_MARGIN_TYPE position_policy=$POSITION_POLICY aso_delta_threshold=$ASO_DELTA_THRESHOLD aso_zone_threshold=$ASO_ZONE_THRESHOLD" >&2
+  echo "Server max_runtime_minutes=$server_max_runtime_minutes allowed_margin_type=$server_allowed_margin_type position_policy=$server_position_policy aso_delta_threshold=$server_aso_delta_threshold aso_zone_threshold=$server_aso_zone_threshold" >&2
+  echo "Script max_runtime_minutes=$DURATION_MINUTES allowed_margin_type=$ALLOWED_MARGIN_TYPE position_policy=$POSITION_POLICY aso_delta_threshold=$ASO_DELTA_THRESHOLD aso_zone_threshold=$ASO_ZONE_THRESHOLD" >&2
   exit 2
 fi
 
-echo "Configuring bounded MAINNET auto live risk budget. This is not persisted live approval beyond the running server policy."
+echo "Starting public market-data runtime and waiting for a fresh BTCUSDT kline stream before live-auto start."
+curl -fsS -X POST "$BASE_URL/api/runtime/start" >/dev/null
+market_ready="false"
+market_snapshot=""
+for _ in $(seq 1 120); do
+  market_snapshot="$(curl -fsS "$BASE_URL/api/bootstrap")"
+  now_ms="$(date +%s)000"
+  runtime_running="$(jq -r '.runtime_status.running // false' <<<"$market_snapshot")"
+  runtime_symbol="$(jq -r '.runtime_status.active_symbol // "unknown"' <<<"$market_snapshot")"
+  runtime_timeframe="$(jq -r '.runtime_status.timeframe // "unknown"' <<<"$market_snapshot")"
+  connection_status="$(jq -r '.connection_state.status // "unknown"' <<<"$market_snapshot")"
+  last_message_time="$(jq -r '.connection_state.last_message_time // empty' <<<"$market_snapshot")"
+  latest_closed_time="$(jq -r --arg timeframe "$runtime_timeframe" '[.candles[]? | select(.symbol == "BTCUSDT" and .timeframe == $timeframe and .closed == true) | .close_time] | max // empty' <<<"$market_snapshot")"
+  case "$runtime_timeframe" in
+    1m) closed_fresh_limit_ms=$((90000 + 60000)) ;;
+    5m) closed_fresh_limit_ms=$((90000 + 300000)) ;;
+    15m) closed_fresh_limit_ms=$((90000 + 900000)) ;;
+    1h) closed_fresh_limit_ms=$((90000 + 3600000)) ;;
+    *) closed_fresh_limit_ms=90000 ;;
+  esac
+  message_age_ms=""
+  closed_age_ms=""
+  if [[ -n "$last_message_time" && "$last_message_time" =~ ^[0-9]+$ ]]; then
+    message_age_ms="$((now_ms - last_message_time))"
+  fi
+  if [[ -n "$latest_closed_time" && "$latest_closed_time" =~ ^[0-9]+$ ]]; then
+    closed_age_ms="$((now_ms - latest_closed_time))"
+  fi
+  if [[ "$runtime_running" == "true" \
+    && "$runtime_symbol" == "BTCUSDT" \
+    && ( "$connection_status" == "connected" || "$connection_status" == "resynced" ) \
+    && -n "$message_age_ms" \
+    && "$message_age_ms" -le 90000 \
+    && -n "$closed_age_ms" \
+    && "$closed_age_ms" -le "$closed_fresh_limit_ms" ]]; then
+    market_ready="true"
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$market_ready" != "true" ]]; then
+  echo "Refusing to start live trial: BTCUSDT market-data runtime is not fresh." >&2
+  jq '{runtime_status, connection_state, latest_candle}' <<<"$market_snapshot" >&2
+  exit 2
+fi
+
+if [[ "$DURATION_MINUTES" == "0" ]]; then
+  BUDGET_ID="mainnet-auto-live-operator-stop-v1"
+else
+  BUDGET_ID="mainnet-auto-live-${DURATION_MINUTES}m-v1"
+fi
+
+echo "Configuring MAINNET auto live risk budget. This is not persisted live approval beyond the running server policy."
 curl -fsS -X PUT "$BASE_URL/api/live/mainnet-auto/risk-budget" \
   -H 'content-type: application/json' \
   -d "$(jq -n \
-    --arg budget_id "mainnet-auto-live-${DURATION_MINUTES}m-v1" \
+    --arg budget_id "$BUDGET_ID" \
     --arg max_notional "$MAX_NOTIONAL" \
     --arg max_session_loss_usdt "$MAX_SESSION_LOSS_USDT" \
     --arg max_leverage "$MAX_LEVERAGE" \
@@ -241,7 +302,7 @@ curl -fsS -X PUT "$BASE_URL/api/live/mainnet-auto/risk-budget" \
     }')" \
   | jq '{budget_id, allowed_symbols, allowed_order_types, max_runtime_minutes, max_orders_per_session, max_fills_per_session, max_notional_per_order, max_daily_realized_loss, max_leverage}'
 
-echo "Starting bounded MAINNET auto live session. No per-order confirmation is used after this session-level confirmation."
+echo "Starting MAINNET auto live session. No per-order confirmation is used after this session-level confirmation."
 curl -fsS -X POST "$BASE_URL/api/live/mainnet-auto/start" \
   -H 'content-type: application/json' \
   -d "$(jq -n \
