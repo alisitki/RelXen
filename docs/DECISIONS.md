@@ -1,5 +1,15 @@
 # Decisions
 
+## 2026-04-25
+
+### MAINNET auto margin type and ASO policy are explicit session policy
+
+MAINNET auto now treats cross/isolated margin type as an explicit policy gate, separate from one-way position mode and single-asset/multi-assets margin mode. The default allowed margin type is `isolated`; actual `cross` requires explicit `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE=cross` or `any`; actual `unknown` blocks live MAINNET auto. ASO position policy is also explicit: `crossover_only` remains the conservative default, `always_in_market` may enter from latest closed ASO state and is therefore more active/riskier, and `flat_allowed` filters weak ASO states with delta/zone thresholds. In `flat_allowed`, weak state while already positioned defaults to hold rather than adding an unstated stop-loss/take-profit or flatten policy.
+
+### MAINNET auto live evidence is session-scoped
+
+The 15-minute MAINNET auto live trial exposed that generic recent order/fill exports can mix historical TESTNET and prior MAINNET canary records into a live-auto evidence bundle. Live-auto evidence now scopes decisions, orders, and fills to the active mainnet-auto session window and matching session order identifiers. `final_verdict.json` records stop reason, signal/decision counts, order/fill counts, realized PnL, fees, final position, final open orders, and flat-stop outcome. Historical evidence is not rewritten; fresh exports use the scoped format.
+
 ## 2026-04-24
 
 ### Env credential source is local-only operator convenience
@@ -142,4 +152,16 @@ RelXen may expose MAINNET auto state, risk-budget, dry-run, decision-journal, wa
 
 ### First MAINNET auto live support uses session confirmation and MARKET-only BTCUSDT
 
-Mainnet Auto Live Support v1 implements the future live path without running it. The first supported live-auto trial shape is exactly `BTCUSDT`, 15 minutes, `MARKET`, session-level confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, max leverage `5`, notional cap `80`, session loss cap `5 USDT`, one in-flight order, one open position maximum, watchdog runtime stop, and evidence/lesson logging. The public manual execute endpoint remains canary-confirmed; mainnet auto orders can only use the internal auto execution policy from a `live_running` session. Reversal is not improvised: if an unresolved order or position exists and the current policy cannot prove a coherent close/reverse, the decision blocks or the watchdog stops.
+Mainnet Auto Live Support v1 implements the future live path without running it. The supported live-auto trial shape is exactly `BTCUSDT`, 15 minutes, `MARKET`, session-level confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`, notional cap `80`, session loss cap `5 USDT`, max leverage no higher than the configured budget and hard-capped at `100`, one in-flight order, one open position maximum, watchdog runtime stop, and evidence/lesson logging. The public manual execute endpoint remains canary-confirmed; mainnet auto orders can only use the internal auto execution policy from a `live_running` session. Reversal is not improvised: if an unresolved order or position exists and the current policy cannot prove a coherent reduce-only close and flat reconciliation, the entry blocks or the watchdog stops/degrades.
+
+### Mainnet auto margin type and ASO position policy are explicit session gates
+
+MAINNET auto must not infer isolated margin from single-asset mode. Cross, isolated, and unknown margin type are modeled separately from one-way/single-asset account gates; the default allowed margin type remains `isolated`, unknown blocks live start, and cross margin passes only when the operator explicitly allows `cross` or `any` for that bounded session. ASO position policy also stays explicit: `crossover_only` is the conservative default and preserves existing behavior, `always_in_market` may enter from the latest closed-candle ASO state and is riskier, and `flat_allowed` filters weak ASO states with documented delta/zone thresholds instead of adding stop-loss, take-profit, heatmap, liquidation, or conditional-order behavior.
+
+### Always-in-market reverse and flat-stop require reduce-only close reconciliation
+
+The degraded 2026-04-25 `always_in_market` live run proved that blocking reversal and only reporting a flat-stop failure can leave exposure after a bounded session. MAINNET auto now owns a private reduce-only close path for coherent `always_in_market` reverse and `require_flat_stop`: close current position first, repair/reconcile until BTCUSDT is flat and no open order remains, and only then allow an opposite entry. If close submission, order repair, or position reconciliation is ambiguous, the system blocks the entry or marks stop degraded. This does not add conditional/algo orders, heatmap/liquidation logic, broader symbols, or a public mainnet bypass.
+
+### Mainnet auto leverage budget hard cap is 100x
+
+The explicit MAINNET auto leverage budget may now be configured up to `100x`; values above `100x` are rejected. The start gate still requires active-symbol exchange leverage to be no higher than the configured session budget, and RelXen still does not add an exchange leverage-adjustment endpoint. This is a gate change, not a recommendation to use high leverage.

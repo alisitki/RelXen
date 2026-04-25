@@ -35,6 +35,9 @@ cargo run -p relxen-server
 - `RELXEN_MAINNET_AUTO_MODE`: `dry_run` or `live`. Default is `dry_run`; dry-run records decisions/evidence and never submits orders.
 - `RELXEN_MAINNET_AUTO_MAX_RUNTIME_MINUTES`, `RELXEN_MAINNET_AUTO_MAX_ORDERS`, `RELXEN_MAINNET_AUTO_MAX_FILLS`, `RELXEN_MAINNET_AUTO_MAX_NOTIONAL`, `RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS`: typed mainnet-auto risk budget inputs.
 - `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_START`, `RELXEN_MAINNET_AUTO_REQUIRE_FLAT_STOP`, `RELXEN_MAINNET_AUTO_REQUIRE_MANUAL_CANARY_EVIDENCE`, `RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED`, `RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED`: fail-closed mainnet-auto requirements. Defaults keep evidence and lesson reporting mandatory.
+- `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE`: `isolated`, `cross`, or `any`; default `isolated`. Actual `unknown` margin type blocks live MAINNET auto.
+- `RELXEN_MAINNET_AUTO_POSITION_POLICY`: `crossover_only`, `always_in_market`, or `flat_allowed`; default `crossover_only`.
+- `RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD`, `RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD`: conservative filters used by `flat_allowed`.
 - `RELXEN_ENABLE_TESTNET_DRILL_HELPERS`: enables explicit TESTNET-only drill helpers for a bounded soak drill. Default is `false`; leave it off outside intentional soak validation.
 - `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET_KEY`, `BINANCE_MAINNET_API_KEY`, `BINANCE_MAINNET_API_SECRET_KEY`: local-only env credential values when env source is enabled. `.env.example` must contain placeholders only and `.env` must never be committed.
 
@@ -151,13 +154,17 @@ RELXEN_BASE_URL=http://localhost:3000 scripts/export_mainnet_auto_evidence.sh
 
 The helper scripts never print raw secrets, default to dry-run, and refuse to run if `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true` is present in the script environment. Dry-run decisions are persisted and exported under `artifacts/mainnet-auto/<timestamp>/` with empty `orders.json` / `fills.json` unless a future live batch explicitly authorizes real execution.
 
-Live MAINNET auto start remains fail-closed unless all of these are true in a future explicit batch: server config enables live auto, mode is `live`, the operator arms/starts the session with strong confirmation, mainnet credentials and readiness are fresh, risk budget is valid, manual canary evidence is accepted, evidence logging initializes, lesson output initializes, kill switch is released, and normal live gates pass.
+Live MAINNET auto start remains fail-closed unless all of these are true in an explicit session-scoped batch: server config enables live auto, mode is `live`, the operator arms/starts the session with strong confirmation, mainnet credentials and readiness are fresh, risk budget is valid, manual canary evidence is accepted, evidence logging initializes, lesson output initializes, kill switch is released, and normal live gates pass.
 
 Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded one `dry_run_would_submit` decision, kept live start `config_blocked`, and submitted no order.
 
-Mainnet Auto Live Support v1 adds the future live start surface but does not run it by default. The endpoint requires a typed payload with `symbol=BTCUSDT`, `duration_minutes=15`, `order_type=MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`; it also requires `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, a live risk budget, fresh readiness/shadow/reference state, flat start, one-way/single-asset account mode, leverage `<=5`, and watchdog/evidence/lesson readiness. The operator helper `scripts/run_mainnet_auto_live_trial.sh` accepts the explicit v1 risk flags from the live-trial plan and refuses to start unless both its shell environment and the running server are in session-scoped live mode. See [MAINNET_AUTO_LIVE_TRIAL_PLAN.md](./MAINNET_AUTO_LIVE_TRIAL_PLAN.md).
+Mainnet Auto Live Support v1 adds the live start surface but does not run it by default. The endpoint requires a typed payload with `symbol=BTCUSDT`, `duration_minutes=15`, `order_type=MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`; it also requires `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, a live risk budget, fresh readiness/shadow/reference state, flat start, one-way/single-asset account mode, allowed known margin type, leverage no higher than the configured session budget and never above `100x`, and watchdog/evidence/lesson readiness. The operator helper `scripts/run_mainnet_auto_live_trial.sh` accepts explicit risk, margin-type, and ASO policy flags from the live-trial plan and refuses to start unless both its shell environment and the running server are in session-scoped live mode with matching policy config. See [MAINNET_AUTO_LIVE_TRIAL_PLAN.md](./MAINNET_AUTO_LIVE_TRIAL_PLAN.md).
 
-Future live trial helper commands, not to run without a separate explicit execution task:
+Mainnet Auto Policy Support v1 keeps `crossover_only` as default behavior. `always_in_market` is more active/riskier because it maps latest closed ASO state directly to desired LONG/SHORT. `flat_allowed` filters weak ASO states with delta/zone thresholds and holds existing positions by default when state is weak. The hardening batch after the degraded `always_in_market` live run adds mocked support for reduce-only close, flat reconciliation, and opposite-side entry only after the account is confirmed flat; `crossover_only` keeps the conservative open-position blocker.
+
+Latest live-auto evidence: `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`. The 2026-04-25 run stopped by watchdog at `max_runtime_reached`, recorded zero signals, zero decisions, zero submitted orders, zero fills, realized PnL/fees `0`, no open MAINNET BTCUSDT order, and a flat BTCUSDT position. `lessons.md` and `lessons.json` were generated. This does not enable repeat or always-on live auto.
+
+Live trial helper commands, not to run without a separate explicit execution task:
 
 ```sh
 RELXEN_BASE_URL=http://localhost:3000 ./scripts/show_mainnet_auto_status.sh --precheck
@@ -251,6 +258,6 @@ The latest second canary execution evidence is `artifacts/mainnet-canary/2026042
 
 ## Paper-Mode Boundaries
 
-RelXen v1 paper mode remains independent. Post-v1 RelXen can place/cancel/flatten TESTNET orders only through explicit operator actions and fail-closed gates. MAINNET remains default-off except for the manual canary gate, MAINNET auto remains blocked, conditional/algo orders are unsupported, and symbol scope is unchanged. Live credentials use OS secure storage by default or explicit local env loading; SQLite stores masked metadata only.
+RelXen v1 paper mode remains independent. Post-v1 RelXen can place/cancel/flatten TESTNET orders only through explicit operator actions and fail-closed gates. MAINNET remains default-off except for the manual canary gate and explicit session-scoped MAINNET auto trials; MAINNET auto remains blocked in normal startup, conditional/algo orders are unsupported, and symbol scope is unchanged. Live credentials use OS secure storage by default or explicit local env loading; SQLite stores masked metadata only.
 
 Liquidation heatmap/liquidation-context work is deferred until after mainnet safety hardening. It should not be added as a model, API, frontend panel, strategy input, or live decision layer in the current canary-readiness flow.

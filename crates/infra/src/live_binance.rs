@@ -17,8 +17,8 @@ use relxen_app::{now_ms, AppError, AppResult, LiveExchangePort, LiveUserDataStre
 use relxen_domain::{
     LiveAccountModeStatus, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
     LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationResult,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveFillRecord, LiveOrderRecord,
-    LiveOrderSide, LiveOrderStatus, LiveOrderType, LivePositionSnapshot,
+    LiveCredentialValidationStatus, LiveEnvironment, LiveFillRecord, LiveMarginType,
+    LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType, LivePositionSnapshot,
     LiveReferencePriceSnapshot, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
     LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, QuoteAsset, Symbol,
 };
@@ -370,7 +370,7 @@ impl LiveExchangePort for BinanceLiveReadOnly {
             environment = %environment,
             symbol = payload.get("symbol").map(String::as_str).unwrap_or("unknown"),
             order_type = payload.get("type").map(String::as_str).unwrap_or("unknown"),
-            "submitting Binance testnet order"
+            "submitting Binance live order"
         );
         let response = self
             .signed_request_json::<BinanceOrderResponse>(
@@ -892,11 +892,21 @@ struct BinancePosition {
     unrealized_profit: f64,
     #[serde(default, deserialize_with = "de_optional_string_f64")]
     leverage: Option<f64>,
+    margin_type: Option<String>,
+    isolated: Option<bool>,
 }
 
 impl BinancePosition {
     fn into_snapshot(self) -> Option<LivePositionSnapshot> {
         let symbol = self.symbol.parse().ok()?;
+        let margin_type = match LiveMarginType::from_exchange_str(self.margin_type.as_deref()) {
+            LiveMarginType::Unknown => match self.isolated {
+                Some(true) => LiveMarginType::Isolated,
+                Some(false) => LiveMarginType::Cross,
+                None => LiveMarginType::Unknown,
+            },
+            margin_type => margin_type,
+        };
         Some(LivePositionSnapshot {
             symbol,
             position_side: self.position_side.unwrap_or_else(|| "BOTH".to_string()),
@@ -905,6 +915,7 @@ impl BinancePosition {
             mark_price: self.mark_price,
             unrealized_pnl: self.unrealized_profit,
             leverage: self.leverage,
+            margin_type,
         })
     }
 }
@@ -1242,7 +1253,7 @@ mod tests {
     use relxen_app::LiveExchangePort;
     use relxen_domain::{
         LiveCredentialId, LiveCredentialSecret, LiveCredentialValidationStatus, LiveEnvironment,
-        LiveOrderStatus, Symbol,
+        LiveMarginType, LiveOrderStatus, Symbol,
     };
 
     fn account_body() -> serde_json::Value {
@@ -1256,7 +1267,7 @@ mod tests {
                 {"asset": "USDT", "walletBalance": "100.0", "availableBalance": "90.0", "unrealizedProfit": "0.0"}
             ],
             "positions": [
-                {"symbol": "BTCUSDT", "positionSide": "BOTH", "positionAmt": "0.001", "entryPrice": "100000.0", "markPrice": "100100.0", "unrealizedProfit": "0.1", "leverage": "5"}
+                {"symbol": "BTCUSDT", "positionSide": "BOTH", "positionAmt": "0.001", "entryPrice": "100000.0", "markPrice": "100100.0", "unrealizedProfit": "0.1", "leverage": "5", "isolated": true}
             ]
         })
     }
@@ -1381,6 +1392,7 @@ mod tests {
         assert!(snapshot.can_trade);
         assert_eq!(snapshot.assets[0].asset, "USDT");
         assert_eq!(snapshot.positions[0].symbol, Symbol::BtcUsdt);
+        assert_eq!(snapshot.positions[0].margin_type, LiveMarginType::Isolated);
     }
 
     #[tokio::test]

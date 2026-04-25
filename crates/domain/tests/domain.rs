@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use relxen_domain::{
-    compute_aso_series, compute_performance, derive_signal_history, mark_to_market,
-    open_position_size, reset_wallets, signal_from_points, AsoCalculator, AsoMode, Candle,
-    PaperEngine, PositionSide, QuoteAsset, Settings, SignalEvent, SignalSide, Symbol, Timeframe,
-    TradeAction,
+    compute_aso_series, compute_performance, derive_signal_history, evaluate_aso_position_policy,
+    mark_to_market, open_position_size, reset_wallets, signal_from_points, AsoCalculator, AsoMode,
+    AsoPolicyInput, AsoPositionPolicy, Candle, LiveMarginType, MainnetAutoAllowedMarginType,
+    MainnetAutoDesiredSide, MainnetAutoPolicyAction, PaperEngine, PositionSide, QuoteAsset,
+    Settings, SignalEvent, SignalSide, Symbol, Timeframe, TradeAction,
 };
 
 fn candle(index: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -249,4 +250,132 @@ fn derive_signal_history_returns_only_crossovers() {
     let history = derive_signal_history(Symbol::BtcUsdt, Timeframe::M1, &points);
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].side, SignalSide::Buy);
+}
+
+#[test]
+fn mainnet_auto_default_position_policy_is_crossover_only() {
+    assert_eq!(
+        relxen_domain::MainnetAutoConfig::default().position_policy,
+        AsoPositionPolicy::CrossoverOnly
+    );
+}
+
+#[test]
+fn always_in_market_chooses_long_when_bulls_exceed_bears() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::AlwaysInMarket,
+        bulls: Some(60.0),
+        bears: Some(40.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::Long);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::EnterLong);
+}
+
+#[test]
+fn always_in_market_chooses_short_when_bears_exceed_bulls() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::AlwaysInMarket,
+        bulls: Some(35.0),
+        bears: Some(65.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::Short);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::EnterShort);
+}
+
+#[test]
+fn always_in_market_does_nothing_on_equal_or_invalid_aso_state() {
+    let equal = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::AlwaysInMarket,
+        bulls: Some(50.0),
+        bears: Some(50.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(equal.desired_side, MainnetAutoDesiredSide::None);
+    assert_eq!(equal.action, MainnetAutoPolicyAction::NoTrade);
+
+    let invalid = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::AlwaysInMarket,
+        bulls: None,
+        bears: Some(50.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(invalid.action, MainnetAutoPolicyAction::NoTrade);
+    assert_eq!(invalid.blocker.as_deref(), Some("aso_state_invalid"));
+}
+
+#[test]
+fn flat_allowed_blocks_weak_delta() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::FlatAllowed,
+        bulls: Some(52.0),
+        bears: Some(48.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::None);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::NoTrade);
+    assert_eq!(decision.reason, "flat_allowed_delta_below_threshold");
+}
+
+#[test]
+fn flat_allowed_allows_long_when_delta_and_zone_pass() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::FlatAllowed,
+        bulls: Some(62.0),
+        bears: Some(38.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::Long);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::EnterLong);
+}
+
+#[test]
+fn flat_allowed_allows_short_when_delta_and_zone_pass() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::FlatAllowed,
+        bulls: Some(35.0),
+        bears: Some(65.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::Short);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::EnterShort);
+}
+
+#[test]
+fn crossover_only_preserves_wait_for_signal_behavior() {
+    let decision = evaluate_aso_position_policy(AsoPolicyInput {
+        policy: AsoPositionPolicy::CrossoverOnly,
+        bulls: Some(65.0),
+        bears: Some(35.0),
+        delta_threshold: 5.0,
+        zone_threshold: 55.0,
+        current_side: MainnetAutoDesiredSide::None,
+    });
+    assert_eq!(decision.desired_side, MainnetAutoDesiredSide::None);
+    assert_eq!(decision.action, MainnetAutoPolicyAction::NoTrade);
+}
+
+#[test]
+fn margin_policy_allows_only_explicit_margin_type() {
+    assert!(MainnetAutoAllowedMarginType::Isolated.allows(LiveMarginType::Isolated));
+    assert!(!MainnetAutoAllowedMarginType::Isolated.allows(LiveMarginType::Cross));
+    assert!(MainnetAutoAllowedMarginType::Cross.allows(LiveMarginType::Cross));
+    assert!(MainnetAutoAllowedMarginType::Any.allows(LiveMarginType::Cross));
+    assert!(MainnetAutoAllowedMarginType::Any.allows(LiveMarginType::Isolated));
+    assert!(!MainnetAutoAllowedMarginType::Any.allows(LiveMarginType::Unknown));
 }

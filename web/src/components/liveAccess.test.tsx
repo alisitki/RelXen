@@ -812,6 +812,15 @@ describe("live access panel", () => {
         closed_candle_open_time: 1,
         signal_id: "signal-1",
         signal_side: "buy",
+        policy_mode: "crossover_only",
+        aso_bulls: 55,
+        aso_bears: 45,
+        aso_delta: 10,
+        aso_zone: 55,
+        desired_side: "long",
+        current_position_side: "none",
+        policy_action: "enter_long",
+        policy_reason: "dry_run_blocked",
         would_submit: false,
         blocking_reasons: ["credentials_missing"],
         message: "Dry-run blocked before submit.",
@@ -823,7 +832,14 @@ describe("live access panel", () => {
       session_id: "session-1",
       mode: "dry_run",
       live_order_submitted: false,
+      position_policy: "crossover_only",
       signals_observed: 1,
+      desired_side_evaluations: 1,
+      enter_decisions: 0,
+      hold_decisions: 0,
+      reverse_decisions: 0,
+      no_trade_decisions: 0,
+      margin_type_block_count: 0,
       decisions_blocked: 1,
       would_submit_decisions: 0,
       duplicate_suppression_count: 0,
@@ -856,6 +872,8 @@ describe("live access panel", () => {
     );
 
     expect((await screen.findAllByText("MAINNET AUTO DRY-RUN RUNNING")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/actual UNKNOWN · allowed ISOLATED/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/CROSSOVER ONLY · desired NONE · action NO TRADE/).length).toBeGreaterThan(0);
     expect(screen.getByText("Live auto start is intentionally not an easy UI action; backend gates still block it by default.")).toBeTruthy();
     expect(document.body.textContent).not.toContain("LIVE RUNNING");
 

@@ -746,6 +746,14 @@ export function LiveAccessPanel() {
                 value={`max order ${mainnetAuto.risk_budget.max_notional_per_order} · max leverage ${mainnetAuto.risk_budget.max_leverage}`}
               />
               <Metric
+                label="Margin Policy"
+                value={`actual ${mainnetAuto.margin_policy.actual_margin_type.toUpperCase()} · allowed ${mainnetAuto.margin_policy.allowed_margin_type.toUpperCase()}${mainnetAuto.margin_policy.blocker ? ` · ${mainnetAuto.margin_policy.blocker}` : ""}`}
+              />
+              <Metric
+                label="ASO Policy"
+                value={`${mainnetAuto.position_policy.policy.replaceAll("_", " ").toUpperCase()} · desired ${mainnetAuto.position_policy.desired_side.toUpperCase()} · action ${mainnetAuto.position_policy.last_action.replaceAll("_", " ").toUpperCase()}`}
+              />
+              <Metric
                 label="Watchdog"
                 value={mainnetAuto.last_watchdog_stop_reason ?? "NO WATCHDOG STOP"}
               />
@@ -1241,7 +1249,11 @@ function defaultMainnetAutoStatus(): LiveStatusSnapshot["mainnet_auto"] {
       require_flat_stop: true,
       require_manual_canary_evidence: true,
       evidence_required: true,
-      lesson_report_required: true
+      lesson_report_required: true,
+      allowed_margin_type: "isolated",
+      position_policy: "crossover_only",
+      aso_delta_threshold: "5",
+      aso_zone_threshold: "55"
     },
     risk_budget: {
       configured: true,
@@ -1273,6 +1285,27 @@ function defaultMainnetAutoStatus(): LiveStatusSnapshot["mainnet_auto"] {
       last_check_at: null,
       last_stop_reason: null,
       last_message: "Mainnet auto watchdog is idle."
+    },
+    margin_policy: {
+      allowed_margin_type: "isolated",
+      actual_margin_type: "unknown",
+      allowed: false,
+      blocker: "margin_type_unknown",
+      warning: null
+    },
+    position_policy: {
+      policy: "crossover_only",
+      aso_delta_threshold: "5",
+      aso_zone_threshold: "55",
+      last_bulls: null,
+      last_bears: null,
+      last_delta: null,
+      last_zone: null,
+      desired_side: "none",
+      current_side: "none",
+      last_action: "no_trade",
+      last_blocker: null,
+      last_reason: "not_evaluated"
     },
     session_id: null,
     started_at: null,

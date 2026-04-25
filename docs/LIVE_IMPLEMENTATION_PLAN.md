@@ -259,13 +259,13 @@ Tests required:
 - Safe-default smoke checks for health, bootstrap, live status, masked credentials, and static frontend.
 - Secret-scan evidence/repository surfaces for raw credential values, excluding the local `.env` source file itself.
 
-## Phase 5 — Mainnet Auto Live Support Slice (Implemented, Not Run)
+## Phase 5 — Mainnet Auto Live Support Slice (Implemented, First Live Trial Complete)
 
-Goal: Implement a real gated MAINNET auto live-session path for a future explicit 15-minute `BTCUSDT` trial without starting it in this batch.
+Goal: Implement a real gated MAINNET auto live-session path and exercise the first explicit 15-minute `BTCUSDT` trial under session-scoped controls.
 
-Status: Implemented as Mainnet Auto Live Support v1. `POST /api/live/mainnet-auto/start` accepts a typed live-start request requiring `BTCUSDT`, `15` minutes, `MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`. The service rejects unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, fresh MAINNET credential/readiness/shadow/rules/reference state, flat start, one-way/single-asset mode, leverage `<=5`, risk budget, watchdog, and evidence/lesson requirements pass. Closed-candle ASO signals can submit through the existing exchange adapter only from a `live_running` mainnet-auto session. Tests use mocked adapters; no real order was submitted. The operator helper now accepts the requested live-trial flags and checks the running server config before calling the start endpoint.
+Status: Implemented as Mainnet Auto Live Support v1 and exercised once on 2026-04-25. `POST /api/live/mainnet-auto/start` accepts a typed live-start request requiring `BTCUSDT`, `15` minutes, `MARKET`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M`. The service rejects unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, fresh MAINNET credential/readiness/shadow/rules/reference state, flat start, one-way/single-asset mode, leverage no higher than the configured session budget and never above `100x`, risk budget, watchdog, and evidence/lesson requirements pass. Closed-candle ASO signals can submit through the existing exchange adapter only from a `live_running` mainnet-auto session. Tests use mocked adapters for submit-path coverage, including the follow-up `always_in_market` reverse and flat-stop reduce-only close path. The real live trial session `mnauto_live_39b61e12f8084f669b334420a3f105ac` stopped by watchdog at `max_runtime_reached`, observed zero signals, submitted zero orders, recorded zero fills, and ended flat.
 
-Non-goals: No live session run, no TESTNET or MAINNET order in this batch, no conditional/algo orders, no liquidation heatmap, no symbol expansion.
+Non-goals: No always-on mainnet auto, no repeat live session without a new explicit task, no conditional/algo orders, no liquidation heatmap, no symbol expansion.
 
 Tests required:
 
@@ -280,6 +280,29 @@ Exit criteria:
 - Live start is impossible without explicit server config and exact session confirmation.
 - No per-order confirmation is needed after session start, but every signal still passes risk/watchdog/reconciliation gates.
 - Evidence and lesson reporting remain analysis/audit only.
+- First live-trial evidence exists under `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/` and records no live order/fill with final flat state.
+
+## Phase 5A — Mainnet Auto Policy Support Slice (Implemented)
+
+Goal: Add explicit cross/isolated margin gating and ASO position policy modes before any repeat live-auto run.
+
+Status: Implemented without starting a live session or submitting any TESTNET/MAINNET order. MAINNET auto now models `LiveMarginType` as `cross`, `isolated`, or `unknown`; `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE` defaults to `isolated`; unknown margin type blocks live MAINNET auto; cross passes only when explicitly allowed as `cross` or `any`. `RELXEN_MAINNET_AUTO_POSITION_POLICY` supports `crossover_only` (default existing behavior), `always_in_market` (latest closed ASO state chooses LONG/SHORT), and `flat_allowed` (delta/zone filter with conservative hold behavior when already positioned). Status, heartbeat, evidence, and lesson reports expose policy/margin fields.
+
+Non-goals: No live run, no real order, no heatmap/liquidation, no new indicators, no conditional/algo orders, no symbol expansion.
+
+Tests required:
+
+- Domain ASO policy selection and margin-policy allow/block tests.
+- Mocked app tests for margin gate blockers, explicit cross allow, unknown margin block, open-order/open-position blockers, and no real order submission.
+- API/status/frontend/script coverage for policy and margin fields.
+- Full safe gate before any repeat live task.
+
+Exit criteria:
+
+- Default remains `crossover_only` plus isolated margin requirement.
+- Single-asset/multi-assets mode remains separate from cross/isolated margin type.
+- Evidence includes `position_policy.json`, `margin_policy.json`, and `aso_policy_decisions.json`.
+- Live MAINNET auto remains disabled by default.
 
 ## Phase 4C — Second Canary Readiness Dry-Run Slice (Complete)
 
@@ -324,13 +347,13 @@ Rollback/fail-closed behavior: Keep `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=fals
 
 ## Smallest Safe Next Implementation Batch
 
-## Phase 5 — Mainnet Auto Infrastructure And Dry-Run Slice (Current)
+## Phase 5 — Mainnet Auto Infrastructure, Dry-Run, And First Live Trial Slice (Complete)
 
 Goal: Prepare MAINNET auto for a future controlled live trial without starting live auto or submitting any order.
 
-Status: Implemented as infrastructure and exercised in dry-run on the operator DB. RelXen has typed mainnet-auto config gates, persisted risk budget/state/decision/watchdog/lesson metadata, headless status and dry-run APIs, live-start fail-closed blocking, evidence export, and lesson report generation. Dry-run mode records ASO closed-candle decision outcomes, blockers, risk budget, reference price context, watchdog state, and lessons under `artifacts/mainnet-auto/<timestamp>/`. The operator-DB dry-run evidence is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`; it recorded `dry_run_would_submit`, empty `orders.json` / `fills.json`, and blocked live start.
+Status: Implemented as infrastructure, exercised in dry-run on the operator DB, and exercised once as an explicit 15-minute live trial. RelXen has typed mainnet-auto config gates, persisted risk budget/state/decision/watchdog/lesson metadata, headless status and dry-run APIs, live-start fail-closed blocking, evidence export, and lesson report generation. Dry-run mode records ASO closed-candle decision outcomes, blockers, risk budget, reference price context, watchdog state, and lessons under `artifacts/mainnet-auto/<timestamp>/`. The operator-DB dry-run evidence is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`; it recorded `dry_run_would_submit`, empty `orders.json` / `fills.json`, and blocked live start. The first live-trial evidence is `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`; it recorded watchdog stop `max_runtime_reached`, zero signals, zero orders, zero fills, PnL/fees `0`, and final flat state.
 
-Non-goals: No live MAINNET auto run, no TESTNET or MAINNET order submission, no conditional/algo orders, no heatmap/liquidation module, no new strategy indicator, no symbol-scope widening.
+Non-goals: No always-on MAINNET auto run, no repeat live session without a new explicit task, no conditional/algo orders, no heatmap/liquidation module, no new strategy indicator, no symbol-scope widening.
 
 Likely files/modules touched:
 
@@ -363,7 +386,7 @@ Rollback/fail-closed behavior: Set `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=false`,
 
 ## Smallest Safe Next Implementation Batch
 
-Operator can start the explicit 15-minute live-auto trial with the documented session-scoped terminal sequence. After the run, review/export evidence, verify flat stop/no open order, and update the status docs with the actual result.
+Review the completed 2026-04-25 live-auto evidence and return normal startup to safe defaults. Any repeat live-auto trial must use a fresh explicit session-scoped task, precheck, evidence export, and post-run flat check.
 
 ## What Not To Do Next
 

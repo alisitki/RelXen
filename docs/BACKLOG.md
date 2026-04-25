@@ -94,19 +94,26 @@
 - Shadow/reconciliation environment mismatch now blocks readiness, preview, and execution gates.
 - MAINNET auto infrastructure v1 added default-off typed config gates, persisted risk budget/state/decision/watchdog/lesson metadata, dry-run start/stop/status APIs, live-start fail-closed blocking, headless helper scripts, evidence export, and lesson reports. No TESTNET or MAINNET order is submitted by the dry-run path.
 - Credential-selected MAINNET auto dry-run completed on the operator DB under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`: `env-mainnet` was selected/validated, mainnet readiness/shadow refreshed, one dry-run decision recorded `dry_run_would_submit`, live-start remained `config_blocked`, and no live order/fill was submitted.
-- Mainnet Auto Live Support v1 implemented the gated future live path without running it: typed `BTCUSDT` / 15-minute / `MARKET` start request, exact session confirmation, server config gates, live-running session state, closed-candle ASO signal handling through mocked adapter tests, one-position/one-in-flight enforcement, runtime watchdog, live evidence/lesson support, and headless live-trial/status scripts.
+- Mainnet Auto Live Support v1 implemented the gated live path: typed `BTCUSDT` / 15-minute / `MARKET` start request, exact session confirmation, server config gates, live-running session state, closed-candle ASO signal handling through mocked adapter tests, one-position/one-in-flight enforcement, runtime watchdog, live evidence/lesson support, and headless live-trial/status scripts.
 - Mainnet Auto Live Support verification gate rerun completed without starting a real MAINNET auto session, submitting TESTNET/MAINNET orders, or calling real cancel/flatten. Mocked live-ASO tests now prove existing MAINNET shadow open-position and open-order state produces separate `open_position` / `open_order` blockers before any submit attempt.
 - Operator-start command preparation completed for the 15-minute live trial: the live helper now accepts the explicit batch flags, checks the running server is already in session-scoped live-auto mode, configures the bounded risk budget, and calls the existing start endpoint. No live session was started and no order was submitted during this prep.
 - Mainnet-auto persisted-state startup compatibility fixed: legacy operator DB `mainnet_auto_state` singleton JSON without the newer `watchdog` field now decodes with defaults, and a session-scoped live-auto server smoke reached `/api/health` without starting the auto session.
+- Mainnet-auto status helper jq compatibility fixed: `show_mainnet_auto_status.sh --precheck` now uses parenthesized jq expressions and null/default guards so jq 1.7 does not fail before rendering read-only status; recent BTCUSDT fills are filtered to MAINNET for live precheck output.
+- First 15-minute MAINNET auto live trial completed on 2026-04-25 under `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`: session `mnauto_live_39b61e12f8084f669b334420a3f105ac`, `BTCUSDT`, `MARKET`, max leverage `5`, notional cap `80`, max session loss `5`, watchdog stop `max_runtime_reached`, zero signals, zero decisions, zero submitted orders, zero fills, realized PnL `0`, fees `0`, final open orders `0`, and final BTCUSDT position flat. Mainnet auto remains default-off outside explicit session-scoped runs.
+- Mainnet-auto evidence export now scopes live `orders.json` / `fills.json` to the active live session and writes final verdict fields for stop reason, signals/decisions, order/fill counts, PnL/fees, final open orders, final position, and flat-stop outcome.
+- Mainnet Auto Policy Support v1 implemented explicit margin-type policy and ASO position policy modes without submitting any order. Margin type is modeled as `cross`, `isolated`, or `unknown`; `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE` defaults to `isolated`; unknown or non-allowed actual margin type blocks live MAINNET auto; status, heartbeat, evidence, and lessons expose margin policy. `RELXEN_MAINNET_AUTO_POSITION_POLICY` supports `crossover_only`, `always_in_market`, and `flat_allowed`; default remains `crossover_only`. Headless live-trial flags now carry policy/margin settings and mocked tests cover margin gates, policy decisions, blockers, evidence files, and default-off safety.
+- Second `always_in_market` MAINNET auto live trial completed degraded under `artifacts/mainnet-auto/1777104375086-mnauto_live_0518464591cd473fbdac1e34675c1cae/`: one real `BUY MARKET BTCUSDT 0.001` order submitted and filled at average price `77493.50000`; subsequent desired SHORT evaluations were blocked as `reversal_unsupported`; watchdog stopped at max runtime; no open orders remained; final position stayed LONG `0.001`; flat-stop failed; kill switch was engaged afterward. A focused Binance parser fix now derives isolated/cross margin type from the USD-M `isolated` field when `marginType` is absent.
+- Manual post-run cleanup flattened the open MAINNET position through the existing canary-gated reduce-only path under `artifacts/mainnet-canary/20260425T081553Z-mainnet-auto-manual-flatten/`: one `SELL MARKET BTCUSDT 0.001` reduce-only order filled at average price `77513.60000`; final BTCUSDT position amount is `0`; open BTCUSDT orders are `0`.
+- MAINNET auto reverse/flat-stop hardening implemented without submitting a live order: `always_in_market` reverse now submits a reduce-only close, requires flat reconciliation, then submits the opposite entry; watchdog/operator stop uses the same auto-owned reduce-only close path for coherent flat-stop. `crossover_only` preserves its conservative open-position blocker. Mocked-adapter tests cover LONG-to-SHORT reverse, coherent flat-stop, 100x leverage budget acceptance, and >100x rejection.
 
 ## Immediate Next Task
 
-Operator may start the 15-minute live trial with the documented terminal sequence. After the run, export evidence, verify flat stop/no open order, review lessons, and update docs with the actual outcome.
+Run a dry-run/status gate with live auto disabled, review the new reverse/flat-stop test results, then only in a separate explicit execution batch consider a 15-minute `BTCUSDT` MAINNET auto run with `--allowed-margin-type isolated`, `--position-policy always_in_market`, and the intended leverage budget.
 
 ## Deferred Live Execution Work
 
 - Broader mainnet enablement policy after the bounded manual canary evidence.
-- Real MAINNET auto live execution. Support exists, but live mode remains config-gated, operator-armed, watchdog-protected, default-off, and unrun.
+- Repeat or broader MAINNET auto live execution. Support exists and one bounded 15-minute run completed with no orders/fills, and policy modes now exist, but live mode remains config-gated, operator-armed, watchdog-protected, default-off, and session-scoped only.
 - Conditional/algo orders such as STOP, TAKE_PROFIT, and trailing orders.
 - Hedge mode and multi-assets mode support if explicitly designed and tested.
 - Portfolio-level exposure controls beyond the active symbol.
@@ -116,7 +123,7 @@ Operator may start the 15-minute live trial with the documented terminal sequenc
 
 ## Not-Now Items
 
-- MAINNET auto-execution.
+- Broad or always-on MAINNET auto-execution outside explicit bounded sessions.
 - Liquidation heatmap/liquidation-context panels, APIs, or strategy inputs.
 - Plaintext secret storage.
 - Treating paper-engine state as exchange-authoritative truth.

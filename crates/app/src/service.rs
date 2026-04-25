@@ -18,28 +18,31 @@ use serde::Serialize;
 use relxen_domain::{
     build_live_order_preview, compute_aso_series, compute_performance, derive_signal_history,
     mark_to_market, quantize_down, reset_wallets, signal_from_points, validate_settings,
-    warmup_candles_required, AsoCalculator, Candle, ConnectionState, ConnectionStatus,
-    CreateLiveCredentialRequest, DisarmLiveModeRequest, ExecutionMode, LiveAccountShadow,
-    LiveAccountSnapshot, LiveAssetBalance, LiveAutoExecutorRequest, LiveAutoExecutorStateKind,
-    LiveAutoExecutorStatus, LiveBlockingReason, LiveCancelAllRequest, LiveCancelRequest,
-    LiveCancelResult, LiveCredentialId, LiveCredentialMetadata, LiveCredentialSecret,
-    LiveCredentialSource, LiveCredentialSummary, LiveCredentialValidationResult,
-    LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionAvailability,
-    LiveExecutionRequest, LiveExecutionResult, LiveExecutionSnapshot, LiveExecutionState,
-    LiveFillRecord, LiveFlattenRequest, LiveFlattenResult, LiveGateCheck, LiveIntentInput,
-    LiveIntentLock, LiveIntentLockStatus, LiveKillSwitchRequest, LiveKillSwitchState,
-    LiveModePreference, LiveOrderPreflightResult, LiveOrderPreview, LiveOrderRecord, LiveOrderSide,
-    LiveOrderStatus, LiveOrderType, LivePositionSnapshot, LiveReadinessSnapshot,
-    LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile, LiveRuntimeState,
-    LiveShadowBalance, LiveShadowOrder, LiveShadowPosition, LiveShadowStreamState,
-    LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord, LiveStatusSnapshot, LiveSymbolRules,
-    LiveUserDataEvent, LiveWarning, LogEvent, MainnetAutoConfig, MainnetAutoDecisionEvent,
-    MainnetAutoDecisionOutcome, MainnetAutoEvidenceExportResult, MainnetAutoLessonReport,
-    MainnetAutoLiveStartRequest, MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState,
-    MainnetAutoStatus, MainnetAutoStopReason, MainnetAutoWatchdogEvent, PaperEngine,
-    PerformanceStats, Position, QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings,
-    SignalEvent, Symbol, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet,
-    ALLOWED_SYMBOLS, MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
+    warmup_candles_required, AsoCalculator, AsoPoint, AsoPolicyDecision, AsoPolicyInput,
+    AsoPositionPolicy, Candle, ConnectionState, ConnectionStatus, CreateLiveCredentialRequest,
+    DisarmLiveModeRequest, ExecutionMode, LiveAccountShadow, LiveAccountSnapshot, LiveAssetBalance,
+    LiveAutoExecutorRequest, LiveAutoExecutorStateKind, LiveAutoExecutorStatus, LiveBlockingReason,
+    LiveCancelAllRequest, LiveCancelRequest, LiveCancelResult, LiveCredentialId,
+    LiveCredentialMetadata, LiveCredentialSecret, LiveCredentialSource, LiveCredentialSummary,
+    LiveCredentialValidationResult, LiveCredentialValidationStatus, LiveEnvironment,
+    LiveExecutionAvailability, LiveExecutionRequest, LiveExecutionResult, LiveExecutionSnapshot,
+    LiveExecutionState, LiveFillRecord, LiveFlattenRequest, LiveFlattenResult, LiveGateCheck,
+    LiveIntentInput, LiveIntentLock, LiveIntentLockStatus, LiveKillSwitchRequest,
+    LiveKillSwitchState, LiveMarginType, LiveModePreference, LiveOrderIntent,
+    LiveOrderPreflightResult, LiveOrderPreview, LiveOrderRecord, LiveOrderSide,
+    LiveOrderSizingBreakdown, LiveOrderStatus, LiveOrderType, LivePositionSnapshot,
+    LiveReadinessSnapshot, LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile,
+    LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
+    LiveShadowStreamState, LiveShadowStreamStatus, LiveStartCheck, LiveStateRecord,
+    LiveStatusSnapshot, LiveSymbolRules, LiveUserDataEvent, LiveWarning, LogEvent,
+    MainnetAutoConfig, MainnetAutoDecisionEvent, MainnetAutoDecisionOutcome,
+    MainnetAutoDesiredSide, MainnetAutoEvidenceExportResult, MainnetAutoLessonReport,
+    MainnetAutoLiveStartRequest, MainnetAutoMarginPolicyStatus, MainnetAutoPolicyAction,
+    MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState, MainnetAutoStatus,
+    MainnetAutoStopReason, MainnetAutoWatchdogEvent, PaperEngine, PerformanceStats, Position,
+    QuoteAsset, RuntimeStatus, SetLiveModePreferenceRequest, Settings, SignalEvent, SignalSide,
+    Symbol, SystemMetrics, Trade, UpdateLiveCredentialRequest, Wallet, ALLOWED_SYMBOLS,
+    MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
 };
 
 use crate::events::{AppMetadata, BootstrapPayload, OutboundEvent};
@@ -188,6 +191,16 @@ struct MainnetAutoLiveDecisionInput<'a> {
     blocking_reasons: Vec<String>,
     would_submit: bool,
     message: &'a str,
+    policy_decision: Option<AsoPolicyDecision>,
+}
+
+#[derive(Debug, Clone)]
+struct MainnetAutoClosePositionResult {
+    accepted: bool,
+    order: Option<LiveOrderRecord>,
+    flat_confirmed: bool,
+    blocker: Option<String>,
+    message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1715,7 +1728,9 @@ impl AppService {
     }
 
     pub async fn mainnet_auto_status(&self) -> AppResult<MainnetAutoStatus> {
-        self.load_mainnet_auto_status_with_config().await
+        let status = self.load_mainnet_auto_status_with_config().await?;
+        let live_status = self.live_status().await?;
+        Ok(self.apply_mainnet_auto_policy_status(status, Some(&live_status)))
     }
 
     pub async fn mainnet_auto_risk_budget(&self) -> AppResult<MainnetAutoRiskBudget> {
@@ -1809,6 +1824,8 @@ impl AppService {
         let mut blockers = self
             .mainnet_auto_live_start_blockers(request.as_ref(), &risk_budget)
             .await?;
+        let live_status_for_policy = self.live_status().await.ok();
+        status = self.apply_mainnet_auto_policy_status(status, live_status_for_policy.as_ref());
         blockers.sort();
         blockers.dedup();
         if !blockers.is_empty() {
@@ -1869,6 +1886,9 @@ impl AppService {
         status.dry_run_orders_submitted = 0;
         status.evidence_path = Some(evidence_path);
         status.last_decision_id = None;
+        status.last_decision_outcome = None;
+        status.last_order_id = None;
+        status = self.apply_mainnet_auto_policy_status(status, live_status_for_policy.as_ref());
         status.updated_at = now;
         self.repository.save_mainnet_auto_status(&status).await?;
         info!(
@@ -1880,6 +1900,10 @@ impl AppService {
             "MAINNET auto live session started; orders remain gated per signal"
         );
         self.spawn_mainnet_auto_runtime_watchdog(session_id, expires_at);
+        let latest_policy_point = self.state.lock().await.aso_points.last().cloned();
+        if let Some(point) = latest_policy_point {
+            let _ = self.maybe_mainnet_auto_evaluate_aso_policy(point).await;
+        }
         Ok(status)
     }
 
@@ -1903,7 +1927,11 @@ impl AppService {
             ))
         })?;
 
-        let decisions = self.repository.list_mainnet_auto_decisions(200).await?;
+        let all_decisions = self.repository.list_mainnet_auto_decisions(200).await?;
+        let decisions = all_decisions
+            .into_iter()
+            .filter(|decision| decision.session_id == session_id)
+            .collect::<Vec<_>>();
         let watchdog = self
             .repository
             .list_mainnet_auto_watchdog_events(200)
@@ -1911,23 +1939,119 @@ impl AppService {
         let lessons = self.repository.latest_mainnet_auto_lesson_report().await?;
         let risk_budget = self.mainnet_auto_risk_budget().await?;
         let live_order_submitted = auto_status_before.live_orders_submitted > 0;
+        let session_started_at = auto_status_before.started_at.unwrap_or(0);
+        let session_finished_at = auto_status_before.stopped_at.unwrap_or(now);
         let orders = if auto_status_before.mode == MainnetAutoRunMode::Live {
             self.repository
                 .list_live_orders(self.options.recent_live_order_limit)
                 .await?
+                .into_iter()
+                .filter(|order| {
+                    order.environment == LiveEnvironment::Mainnet
+                        && order.symbol == Symbol::BtcUsdt
+                        && order.submitted_at >= session_started_at
+                        && order.submitted_at <= session_finished_at
+                })
+                .collect::<Vec<_>>()
         } else {
             Vec::<LiveOrderRecord>::new()
         };
+        let session_order_ids = orders
+            .iter()
+            .flat_map(|order| {
+                [
+                    Some(order.id.clone()),
+                    Some(order.client_order_id.clone()),
+                    order.exchange_order_id.clone(),
+                ]
+            })
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
         let fills = if auto_status_before.mode == MainnetAutoRunMode::Live {
             self.repository
                 .list_live_fills(self.options.recent_live_fill_limit)
                 .await?
+                .into_iter()
+                .filter(|fill| {
+                    fill.symbol == Symbol::BtcUsdt
+                        && fill.event_time >= session_started_at
+                        && fill.event_time <= session_finished_at
+                        && (fill
+                            .order_id
+                            .as_ref()
+                            .is_some_and(|id| session_order_ids.contains(id))
+                            || fill
+                                .client_order_id
+                                .as_ref()
+                                .is_some_and(|id| session_order_ids.contains(id))
+                            || fill
+                                .exchange_order_id
+                                .as_ref()
+                                .is_some_and(|id| session_order_ids.contains(id)))
+                })
+                .collect::<Vec<_>>()
         } else {
             Vec::<LiveFillRecord>::new()
         };
+        let live_status_after = self.live_status().await?;
+        let final_position = live_status_after
+            .account_snapshot
+            .as_ref()
+            .and_then(|account| {
+                account
+                    .positions
+                    .iter()
+                    .find(|position| position.symbol == Symbol::BtcUsdt)
+                    .cloned()
+            });
+        let final_position_amount = final_position
+            .as_ref()
+            .map(|position| position.position_amt)
+            .unwrap_or(0.0);
+        let final_open_orders = live_status_after
+            .execution
+            .recent_orders
+            .iter()
+            .filter(|order| {
+                order.environment == LiveEnvironment::Mainnet
+                    && order.symbol == Symbol::BtcUsdt
+                    && order.status.is_open()
+            })
+            .count();
+        let flat_stop_succeeded =
+            final_open_orders == 0 && final_position_amount.abs() <= f64::EPSILON;
+        let realized_pnl = fills
+            .iter()
+            .filter_map(|fill| fill.realized_pnl.as_deref())
+            .filter_map(|value| Decimal::from_str(value).ok())
+            .fold(Decimal::ZERO, |acc, value| acc + value);
+        let fees = fills
+            .iter()
+            .filter_map(|fill| fill.commission.as_deref())
+            .filter_map(|value| Decimal::from_str(value).ok())
+            .fold(Decimal::ZERO, |acc, value| acc + value);
+        let mut auto_status_after = self.load_mainnet_auto_status_with_config().await?;
+        auto_status_after.evidence_path = Some(path.to_string_lossy().to_string());
+        auto_status_after.updated_at = now_ms();
         let final_verdict = serde_json::json!({
             "mode": auto_status_before.mode.as_str(),
             "live_order_submitted": live_order_submitted,
+            "orders_submitted": auto_status_before.live_orders_submitted,
+            "orders_recorded": orders.len(),
+            "fills_recorded": fills.len(),
+            "signals_observed": lessons.as_ref().map(|lesson| lesson.signals_observed).unwrap_or(decisions.len() as u64),
+            "decisions_recorded": decisions.len(),
+            "trades": fills.len(),
+            "realized_pnl": realized_pnl.to_string(),
+            "fees": fees.to_string(),
+            "stop_reason": auto_status_before
+                .last_watchdog_stop_reason
+                .map(|reason| reason.as_str()),
+            "final_position": final_position,
+            "final_open_orders": final_open_orders,
+            "flat_stop_succeeded": flat_stop_succeeded,
+            "position_policy": auto_status_before.position_policy,
+            "margin_policy": auto_status_before.margin_policy,
             "final_verdict": if live_order_submitted { "live_session_recorded" } else { "no_live_order_submitted" },
             "recommendation": lessons.as_ref().map(|lesson| lesson.recommendation.as_str()).unwrap_or("live_not_allowed")
         });
@@ -1954,15 +2078,42 @@ impl AppService {
         )?;
         write_json_lines_file(&path, "timeline.ndjson", &decisions)?;
         write_json_file(&path, "live_status_before.json", &status_before)?;
-        write_json_file(&path, "live_status_after.json", &self.live_status().await?)?;
+        write_json_file(&path, "live_status_after.json", &live_status_after)?;
         write_json_file(&path, "auto_status_before.json", &auto_status_before)?;
+        write_json_file(&path, "auto_status_after.json", &auto_status_after)?;
+        write_json_file(&path, "risk_budget.json", &risk_budget)?;
         write_json_file(
             &path,
-            "auto_status_after.json",
-            &self.load_mainnet_auto_status_with_config().await?,
+            "position_policy.json",
+            &auto_status_before.position_policy,
         )?;
-        write_json_file(&path, "risk_budget.json", &risk_budget)?;
+        write_json_file(
+            &path,
+            "margin_policy.json",
+            &auto_status_before.margin_policy,
+        )?;
         write_json_file(&path, "auto_decisions.json", &decisions)?;
+        write_json_file(
+            &path,
+            "aso_policy_decisions.json",
+            &decisions
+                .iter()
+                .map(|decision| {
+                    serde_json::json!({
+                        "policy_mode": decision.policy_mode,
+                        "bulls": decision.aso_bulls,
+                        "bears": decision.aso_bears,
+                        "delta": decision.aso_delta,
+                        "zone": decision.aso_zone,
+                        "desired_side": decision.desired_side,
+                        "current_position_side": decision.current_position_side,
+                        "action": decision.policy_action,
+                        "reason": decision.policy_reason,
+                        "blocking_reasons": decision.blocking_reasons
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?;
         write_json_file(&path, "signal_events.json", &decisions)?;
         write_json_file(
             &path,
@@ -2024,10 +2175,9 @@ impl AppService {
                 &serde_json::json!({"recommendation":"live_not_allowed"}),
             )?;
         }
-        let mut status = self.load_mainnet_auto_status_with_config().await?;
-        status.evidence_path = Some(path.to_string_lossy().to_string());
-        status.updated_at = now_ms();
-        self.repository.save_mainnet_auto_status(&status).await?;
+        self.repository
+            .save_mainnet_auto_status(&auto_status_after)
+            .await?;
         info!(
             event = "evidence_exported",
             path = %path.display(),
@@ -2044,7 +2194,10 @@ impl AppService {
                 "auto_status_before.json".to_string(),
                 "auto_status_after.json".to_string(),
                 "risk_budget.json".to_string(),
+                "position_policy.json".to_string(),
+                "margin_policy.json".to_string(),
                 "auto_decisions.json".to_string(),
+                "aso_policy_decisions.json".to_string(),
                 "signal_events.json".to_string(),
                 "aso_context.json".to_string(),
                 "intent_previews.json".to_string(),
@@ -2095,7 +2248,17 @@ impl AppService {
                 .publish(OutboundEvent::LiveAutoStateUpdated(auto.clone()));
             return self.refresh_live_status_from_repository().await;
         }
-        let status = self.refresh_live_status_from_repository().await?;
+        let status = match self.refresh_live_shadow().await {
+            Ok(status) => status,
+            Err(error) => {
+                warn!(
+                    event = "mainnet_auto_close_prerepair_failed",
+                    detail = %error,
+                    "MAINNET auto close could not refresh shadow before close"
+                );
+                self.refresh_live_status_from_repository().await?
+            }
+        };
         if !status.execution.can_submit
             && !matches!(
                 status.execution.blocking_reasons.as_slice(),
@@ -2800,6 +2963,7 @@ impl AppService {
         } else {
             LiveOrderSide::Buy
         };
+        let environment_label = environment.as_str().to_ascii_uppercase();
         self.publisher.publish(OutboundEvent::LiveFlattenStarted {
             symbol: active_symbol,
         });
@@ -2808,7 +2972,8 @@ impl AppService {
             symbol = %active_symbol,
             side = %side.as_binance(),
             quantity = %decimal_to_exchange_string(quantity),
-            "starting testnet flatten flow"
+            environment = %environment,
+            "starting live flatten flow"
         );
         let canceled = self
             .cancel_all_live_orders(LiveCancelAllRequest {
@@ -2872,15 +3037,17 @@ impl AppService {
                 self.repository.upsert_live_order(&order).await?;
                 self.publish_order_and_execution(order.clone(), false)
                     .await?;
+                let message = format!(
+                    "{environment_label} flatten submitted; final state follows exchange reconciliation."
+                );
                 self.publisher.publish(OutboundEvent::LiveFlattenFinished {
-                    message:
-                        "TESTNET flatten submitted; final state follows exchange reconciliation."
-                            .to_string(),
+                    message: message.clone(),
                 });
                 info!(
                     event = "live_flatten_succeeded",
                     client_order_id = %order.client_order_id,
-                    "testnet flatten order acknowledged"
+                    environment = %environment,
+                    "live flatten order acknowledged"
                 );
                 Ok(LiveFlattenResult {
                     accepted: true,
@@ -2890,9 +3057,7 @@ impl AppService {
                         .collect(),
                     flatten_order: Some(order),
                     blocking_reason: None,
-                    message:
-                        "TESTNET flatten submitted; final state follows exchange reconciliation."
-                            .to_string(),
+                    message,
                     created_at: now_ms(),
                 })
             }
@@ -2900,7 +3065,8 @@ impl AppService {
                 warn!(
                     event = "live_flatten_failed",
                     detail = %error,
-                    "testnet flatten order submission failed"
+                    environment = %environment,
+                    "live flatten order submission failed"
                 );
                 let failed_order = LiveOrderRecord {
                     status: LiveOrderStatus::UnknownNeedsRepair,
@@ -2919,11 +3085,302 @@ impl AppService {
                         .collect(),
                     flatten_order: Some(failed_order),
                     blocking_reason: Some(LiveBlockingReason::FlattenFailed),
-                    message: format!("TESTNET flatten failed: {error}"),
+                    message: format!("{environment_label} flatten failed: {error}"),
                     created_at: now_ms(),
                 })
             }
         }
+    }
+
+    async fn submit_mainnet_auto_reduce_only_close(
+        &self,
+        session_id: &str,
+        reason: &str,
+        source_signal: Option<&SignalEvent>,
+    ) -> AppResult<MainnetAutoClosePositionResult> {
+        let (credential, secret, environment) = self.active_live_secret().await?;
+        if environment != LiveEnvironment::Mainnet {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("mainnet_environment_not_selected".to_string()),
+                message:
+                    "MAINNET auto close blocked because the active environment is not MAINNET."
+                        .to_string(),
+            });
+        }
+
+        let status = self.refresh_live_status_from_repository().await?;
+        if status.environment != LiveEnvironment::Mainnet {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("mainnet_environment_not_selected".to_string()),
+                message: "MAINNET auto close blocked because live status is not MAINNET."
+                    .to_string(),
+            });
+        }
+        if status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.position_mode.as_deref() != Some("one_way"))
+        {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("unsupported_account_mode".to_string()),
+                message: "MAINNET auto close blocked because account mode is not one-way."
+                    .to_string(),
+            });
+        }
+        if status
+            .account_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.multi_assets_margin.unwrap_or(false))
+        {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("unsupported_margin_mode".to_string()),
+                message: "MAINNET auto close blocked because multi-assets margin is enabled."
+                    .to_string(),
+            });
+        }
+        if status.execution.recent_orders.iter().any(|order| {
+            order.environment == LiveEnvironment::Mainnet
+                && order.symbol == Symbol::BtcUsdt
+                && order.status.is_open()
+        }) {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("unexpected_open_order".to_string()),
+                message: "MAINNET auto close blocked because an open BTCUSDT order exists."
+                    .to_string(),
+            });
+        }
+        let Some(shadow) = status.reconciliation.shadow.clone() else {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("shadow_state_ambiguous".to_string()),
+                message: "MAINNET auto close blocked because shadow state is missing.".to_string(),
+            });
+        };
+        if shadow.environment != LiveEnvironment::Mainnet || shadow.ambiguous {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("shadow_state_ambiguous".to_string()),
+                message: "MAINNET auto close blocked because shadow state is ambiguous."
+                    .to_string(),
+            });
+        }
+        if !shadow.open_orders.is_empty() {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("unexpected_open_order".to_string()),
+                message: "MAINNET auto close blocked because the shadow has an open order."
+                    .to_string(),
+            });
+        }
+
+        let position_amt = mainnet_position_amount_decimal(&status, Symbol::BtcUsdt);
+        if position_amt == Decimal::ZERO {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: true,
+                order: None,
+                flat_confirmed: true,
+                blocker: None,
+                message: "MAINNET auto close skipped because BTCUSDT is already flat.".to_string(),
+            });
+        }
+        let rules = status.symbol_rules.clone().ok_or_else(|| {
+            AppError::Conflict("symbol rules are missing for MAINNET auto close".to_string())
+        })?;
+        let step = rules
+            .filters
+            .step_size
+            .and_then(|step| Decimal::from_str(&step.to_string()).ok())
+            .unwrap_or(Decimal::ZERO);
+        let quantity = quantize_down(position_amt.abs(), step);
+        if quantity <= Decimal::ZERO {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: None,
+                flat_confirmed: false,
+                blocker: Some("precision_invalid".to_string()),
+                message: "MAINNET auto close blocked because close quantity rounded to zero."
+                    .to_string(),
+            });
+        }
+
+        let side = if position_amt > Decimal::ZERO {
+            LiveOrderSide::Sell
+        } else {
+            LiveOrderSide::Buy
+        };
+        let available_balance = shadow
+            .balances
+            .iter()
+            .find(|balance| balance.asset == "USDT")
+            .and_then(|balance| Decimal::from_str(&balance.wallet_balance).ok())
+            .or_else(|| {
+                status
+                    .account_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.available_balance)
+                    .and_then(|value| Decimal::from_str(&value.to_string()).ok())
+            })
+            .unwrap_or(Decimal::ZERO);
+        let leverage = status
+            .account_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .positions
+                    .iter()
+                    .find(|position| position.symbol == Symbol::BtcUsdt)
+                    .and_then(|position| position.leverage)
+            })
+            .and_then(|value| Decimal::from_str(&value.to_string()).ok())
+            .unwrap_or(Decimal::ONE);
+        let reference_price = self
+            .current_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt)
+            .await
+            .price;
+        let estimated_notional = reference_price * quantity;
+        let quantity_string = decimal_to_exchange_string(quantity);
+        let mut payload = BTreeMap::new();
+        payload.insert("symbol".to_string(), Symbol::BtcUsdt.as_str().to_string());
+        payload.insert("side".to_string(), side.as_binance().to_string());
+        payload.insert(
+            "type".to_string(),
+            LiveOrderType::Market.as_binance().to_string(),
+        );
+        payload.insert("quantity".to_string(), quantity_string.clone());
+
+        let intent = LiveOrderIntent {
+            id: format!("mnauto_close_{}", Uuid::new_v4().simple()),
+            intent_hash: format!(
+                "mainnet_auto_close:{session_id}:{reason}:{}:{}:{}",
+                side.as_binance(),
+                quantity_string,
+                source_signal
+                    .map(|signal| signal.open_time)
+                    .unwrap_or_default()
+            ),
+            environment: LiveEnvironment::Mainnet,
+            symbol: Symbol::BtcUsdt,
+            side,
+            order_type: LiveOrderType::Market,
+            quantity: quantity_string.clone(),
+            price: None,
+            reduce_only: true,
+            time_in_force: None,
+            source_signal_id: source_signal.map(|signal| signal.id.clone()),
+            source_open_time: source_signal.map(|signal| signal.open_time),
+            reason: reason.to_string(),
+            exchange_payload: payload,
+            sizing: LiveOrderSizingBreakdown {
+                requested_notional: "0".to_string(),
+                available_balance: decimal_to_exchange_string(available_balance),
+                leverage: decimal_to_exchange_string(leverage),
+                required_margin: "0".to_string(),
+                raw_quantity: decimal_to_exchange_string(position_amt.abs()),
+                rounded_quantity: quantity_string,
+                estimated_notional: decimal_to_exchange_string(estimated_notional),
+            },
+            validation_notes: vec!["reduce-only close uses known shadow position size".to_string()],
+            blocking_reasons: Vec::new(),
+            can_preflight: false,
+            can_execute_now: true,
+            built_at: now_ms(),
+        };
+
+        info!(
+            event = "mainnet_auto_reduce_only_close_started",
+            session_id = %session_id,
+            reason = %reason,
+            side = %side.as_binance(),
+            quantity = %intent.quantity,
+            "submitting MAINNET auto reduce-only close order"
+        );
+
+        let result =
+            Box::pin(self.submit_live_order_from_intent(credential, secret, environment, intent))
+                .await?;
+        if !result.accepted {
+            return Ok(MainnetAutoClosePositionResult {
+                accepted: false,
+                order: result.order,
+                flat_confirmed: false,
+                blocker: result
+                    .blocking_reason
+                    .map(|reason| reason.as_str().to_string())
+                    .or_else(|| Some("mainnet_auto_close_submit_failed".to_string())),
+                message: result.message,
+            });
+        }
+
+        let order = result.order;
+        let (flat_confirmed, blocker) =
+            Box::pin(self.wait_for_mainnet_auto_flat_reconciliation(Symbol::BtcUsdt)).await?;
+        Ok(MainnetAutoClosePositionResult {
+            accepted: true,
+            order,
+            flat_confirmed,
+            blocker,
+            message: if flat_confirmed {
+                "MAINNET auto reduce-only close reconciled flat.".to_string()
+            } else {
+                "MAINNET auto reduce-only close submitted but flat state was not reconciled."
+                    .to_string()
+            },
+        })
+    }
+
+    async fn wait_for_mainnet_auto_flat_reconciliation(
+        &self,
+        symbol: Symbol,
+    ) -> AppResult<(bool, Option<String>)> {
+        let mut last_blocker = Some("mainnet_auto_flat_not_reconciled".to_string());
+        for attempt in 0..6 {
+            if attempt > 0 {
+                sleep(Duration::from_millis(250)).await;
+            }
+            let status = match self.refresh_live_shadow().await {
+                Ok(status) => status,
+                Err(error) => {
+                    warn!(
+                        event = "mainnet_auto_flat_reconciliation_refresh_failed",
+                        detail = %error,
+                        "MAINNET auto flat reconciliation refresh failed"
+                    );
+                    self.refresh_live_status_from_repository().await?
+                }
+            };
+            let open_order = mainnet_open_order_exists(&status, symbol);
+            let current_side = current_mainnet_position_side(&status, symbol);
+            if !open_order && current_side == MainnetAutoDesiredSide::None {
+                return Ok((true, None));
+            }
+            last_blocker = Some(if open_order {
+                "mainnet_auto_close_order_still_open".to_string()
+            } else {
+                "mainnet_auto_position_not_flat".to_string()
+            });
+        }
+        Ok((false, last_blocker))
     }
 
     async fn set_live_environment(&self, environment: LiveEnvironment) -> AppResult<()> {
@@ -2945,6 +3402,14 @@ impl AppService {
         status.config = self.options.mainnet_auto_config.clone();
         status.mode = status.config.mode;
         status.risk_budget = risk_budget;
+        status.margin_policy.allowed_margin_type = status.config.allowed_margin_type;
+        status.margin_policy = MainnetAutoMarginPolicyStatus::evaluate(
+            status.config.allowed_margin_type,
+            status.margin_policy.actual_margin_type,
+        );
+        status.position_policy.policy = status.config.position_policy;
+        status.position_policy.aso_delta_threshold = status.config.aso_delta_threshold.clone();
+        status.position_policy.aso_zone_threshold = status.config.aso_zone_threshold.clone();
         if !status.config.enable_live_execution
             && !matches!(status.state, MainnetAutoState::DryRunRunning)
         {
@@ -2953,6 +3418,28 @@ impl AppService {
             status.current_blockers = status.blocking_reasons.clone();
         }
         Ok(status)
+    }
+
+    fn apply_mainnet_auto_policy_status(
+        &self,
+        mut status: MainnetAutoStatus,
+        live_status: Option<&LiveStatusSnapshot>,
+    ) -> MainnetAutoStatus {
+        let actual_margin_type = live_status
+            .map(|status| mainnet_symbol_margin_type(status, Symbol::BtcUsdt))
+            .unwrap_or(status.margin_policy.actual_margin_type);
+        status.margin_policy = MainnetAutoMarginPolicyStatus::evaluate(
+            status.config.allowed_margin_type,
+            actual_margin_type,
+        );
+        status.position_policy.policy = status.config.position_policy;
+        status.position_policy.aso_delta_threshold = status.config.aso_delta_threshold.clone();
+        status.position_policy.aso_zone_threshold = status.config.aso_zone_threshold.clone();
+        if let Some(live_status) = live_status {
+            status.position_policy.current_side =
+                current_mainnet_position_side(live_status, Symbol::BtcUsdt);
+        }
+        status
     }
 
     fn mainnet_auto_config_blockers(&self, config: &MainnetAutoConfig) -> Vec<String> {
@@ -2990,6 +3477,22 @@ impl AppService {
         if request.confirmation_text != MAINNET_AUTO_LIVE_CONFIRMATION_TEXT {
             blockers.push("mainnet_auto_session_confirmation_missing".to_string());
         }
+        if request.allowed_margin_type != self.options.mainnet_auto_config.allowed_margin_type {
+            blockers.push("allowed_margin_type_mismatch".to_string());
+        }
+        if request.position_policy != self.options.mainnet_auto_config.position_policy {
+            blockers.push("position_policy_mismatch".to_string());
+        }
+        if request.aso_delta_threshold.trim()
+            != self.options.mainnet_auto_config.aso_delta_threshold.trim()
+        {
+            blockers.push("aso_delta_threshold_mismatch".to_string());
+        }
+        if request.aso_zone_threshold.trim()
+            != self.options.mainnet_auto_config.aso_zone_threshold.trim()
+        {
+            blockers.push("aso_zone_threshold_mismatch".to_string());
+        }
         if self.options.mainnet_auto_config.max_runtime_minutes != 15 {
             blockers.push("mainnet_auto_config_runtime_not_15m".to_string());
         }
@@ -3023,8 +3526,16 @@ impl AppService {
         if settings.fixed_notional > 80.0 {
             blockers.push("mainnet_auto_fixed_notional_above_80".to_string());
         }
-        if settings.leverage > 5.0 {
-            blockers.push("mainnet_auto_settings_leverage_above_5".to_string());
+        let configured_max_leverage = risk_budget
+            .max_leverage
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        if configured_max_leverage <= 0.0
+            || settings.leverage <= 0.0
+            || settings.leverage > configured_max_leverage
+        {
+            blockers.push("mainnet_auto_settings_leverage_above_max".to_string());
         }
 
         let live_status = self.live_status().await?;
@@ -3070,12 +3581,22 @@ impl AppService {
         {
             blockers.push("unsupported_margin_mode".to_string());
         }
+        let actual_margin_type = mainnet_symbol_margin_type(&live_status, request.symbol);
+        let margin_policy = MainnetAutoMarginPolicyStatus::evaluate(
+            self.options.mainnet_auto_config.allowed_margin_type,
+            actual_margin_type,
+        );
+        if let Some(blocker) = margin_policy.blocker {
+            blockers.push(blocker);
+        }
         if live_status
             .account_snapshot
             .as_ref()
             .is_some_and(|snapshot| {
                 snapshot.positions.iter().any(|position| {
-                    position.symbol == request.symbol && position.leverage.unwrap_or(0.0) > 5.0
+                    position.symbol == request.symbol
+                        && (configured_max_leverage <= 0.0
+                            || position.leverage.unwrap_or(0.0) > configured_max_leverage)
                 })
             })
         {
@@ -3158,7 +3679,7 @@ impl AppService {
             blockers.push("risk_budget_evidence_lessons_required".to_string());
         }
         let max_leverage = Decimal::from_str(&budget.max_leverage).unwrap_or(Decimal::ZERO);
-        if max_leverage <= Decimal::ZERO || max_leverage > Decimal::new(5, 0) {
+        if max_leverage <= Decimal::ZERO || max_leverage > Decimal::new(100, 0) {
             blockers.push("risk_budget_max_leverage_invalid".to_string());
         }
         for (label, value, cap) in [
@@ -3191,6 +3712,86 @@ impl AppService {
         blockers
     }
 
+    fn aso_policy_thresholds(&self) -> (f64, f64) {
+        (
+            self.options
+                .mainnet_auto_config
+                .aso_delta_threshold
+                .trim()
+                .parse::<f64>()
+                .unwrap_or(5.0),
+            self.options
+                .mainnet_auto_config
+                .aso_zone_threshold
+                .trim()
+                .parse::<f64>()
+                .unwrap_or(55.0),
+        )
+    }
+
+    fn policy_decision_from_signal(
+        &self,
+        signal: &SignalEvent,
+        current_side: MainnetAutoDesiredSide,
+    ) -> AsoPolicyDecision {
+        if self.options.mainnet_auto_config.position_policy == AsoPositionPolicy::CrossoverOnly {
+            let desired_side = MainnetAutoDesiredSide::from_signal_side(signal.side);
+            let action = match (current_side, desired_side) {
+                (MainnetAutoDesiredSide::None, MainnetAutoDesiredSide::Long) => {
+                    MainnetAutoPolicyAction::EnterLong
+                }
+                (MainnetAutoDesiredSide::None, MainnetAutoDesiredSide::Short) => {
+                    MainnetAutoPolicyAction::EnterShort
+                }
+                (current, desired) if current == desired => MainnetAutoPolicyAction::Hold,
+                (_, _) => MainnetAutoPolicyAction::Reverse,
+            };
+            return AsoPolicyDecision {
+                policy: AsoPositionPolicy::CrossoverOnly,
+                bulls: Some(signal.bulls),
+                bears: Some(signal.bears),
+                delta: Some((signal.bulls - signal.bears).abs()),
+                zone: Some(signal.bulls.max(signal.bears)),
+                desired_side,
+                current_side,
+                action,
+                blocker: None,
+                reason: "closed_candle_crossover_signal".to_string(),
+            };
+        }
+
+        let (delta_threshold, zone_threshold) = self.aso_policy_thresholds();
+        relxen_domain::evaluate_aso_position_policy(AsoPolicyInput {
+            policy: self.options.mainnet_auto_config.position_policy,
+            bulls: Some(signal.bulls),
+            bears: Some(signal.bears),
+            delta_threshold,
+            zone_threshold,
+            current_side,
+        })
+    }
+
+    fn update_auto_status_policy_decision(
+        &self,
+        status: &mut MainnetAutoStatus,
+        decision: &AsoPolicyDecision,
+    ) {
+        status.position_policy.policy = decision.policy;
+        status.position_policy.aso_delta_threshold =
+            self.options.mainnet_auto_config.aso_delta_threshold.clone();
+        status.position_policy.aso_zone_threshold =
+            self.options.mainnet_auto_config.aso_zone_threshold.clone();
+        status.position_policy.last_bulls = decision.bulls;
+        status.position_policy.last_bears = decision.bears;
+        status.position_policy.last_delta = decision.delta;
+        status.position_policy.last_zone = decision.zone;
+        status.position_policy.desired_side = decision.desired_side;
+        status.position_policy.current_side = decision.current_side;
+        status.position_policy.last_action = decision.action;
+        status.position_policy.last_blocker = decision.blocker.clone();
+        status.position_policy.last_reason = Some(decision.reason.clone());
+    }
+
     fn initialize_mainnet_auto_evidence_dir(
         &self,
         session_id: &str,
@@ -3211,7 +3812,9 @@ impl AppService {
                 "created_at": now,
                 "secret_policy": "masked_metadata_only",
                 "live_session_started": true,
-                "live_order_submitted": false
+                "live_order_submitted": false,
+                "allowed_margin_type": self.options.mainnet_auto_config.allowed_margin_type.as_str(),
+                "position_policy": self.options.mainnet_auto_config.position_policy.as_str()
             }),
         )?;
         write_text_file(
@@ -3345,6 +3948,8 @@ impl AppService {
                         && decision.timeframe == settings.timeframe
                         && decision.closed_candle_open_time == Some(signal.open_time)
                         && decision.signal_side == Some(signal.side)
+                        && decision.policy_mode
+                            == Some(self.options.mainnet_auto_config.position_policy)
                         && decision.strategy_id == "aso_closed_candle_v1"
                 });
             if duplicate_seen {
@@ -3385,6 +3990,29 @@ impl AppService {
             "timeframe".to_string(),
             settings.timeframe.as_str().to_string(),
         );
+        let signal_bulls = signal.as_ref().map(|signal| signal.bulls);
+        let signal_bears = signal.as_ref().map(|signal| signal.bears);
+        let signal_delta = signal_bulls
+            .zip(signal_bears)
+            .map(|(bulls, bears)| (bulls - bears).abs());
+        let desired_side = signal
+            .as_ref()
+            .map(|signal| MainnetAutoDesiredSide::from_signal_side(signal.side));
+        let current_side = current_mainnet_position_side(&live_status, settings.active_symbol);
+        let policy_action = if would_submit {
+            match desired_side.unwrap_or_default() {
+                MainnetAutoDesiredSide::Long => MainnetAutoPolicyAction::EnterLong,
+                MainnetAutoDesiredSide::Short => MainnetAutoPolicyAction::EnterShort,
+                MainnetAutoDesiredSide::None => MainnetAutoPolicyAction::NoTrade,
+            }
+        } else if blockers
+            .iter()
+            .any(|blocker| blocker == "open_position" || blocker == "open_order")
+        {
+            MainnetAutoPolicyAction::Blocked
+        } else {
+            MainnetAutoPolicyAction::NoTrade
+        };
         let decision = MainnetAutoDecisionEvent {
             id: format!("mnauto_decision_{}", Uuid::new_v4().simple()),
             session_id: session_id.to_string(),
@@ -3409,7 +4037,8 @@ impl AppService {
                 .and_then(|snapshot| snapshot.age_ms),
             intent_hash: if would_submit {
                 Some(format!(
-                    "dry-run:{}:{}:{}",
+                    "dry-run:{}:{}:{}:{}",
+                    self.options.mainnet_auto_config.position_policy.as_str(),
                     settings.active_symbol.as_str(),
                     settings.timeframe.as_str(),
                     signal.as_ref().map(|s| s.open_time).unwrap_or(now)
@@ -3419,6 +4048,21 @@ impl AppService {
             },
             would_submit,
             blocking_reasons: blockers.clone(),
+            policy_mode: Some(self.options.mainnet_auto_config.position_policy),
+            aso_bulls: signal_bulls,
+            aso_bears: signal_bears,
+            aso_delta: signal_delta,
+            aso_zone: signal_bulls
+                .zip(signal_bears)
+                .map(|(bulls, bears)| bulls.max(bears)),
+            desired_side,
+            current_position_side: Some(current_side),
+            policy_action: Some(policy_action),
+            policy_reason: Some(if would_submit {
+                "dry_run_would_submit_crossover_signal".to_string()
+            } else {
+                format!("dry_run_blocked: {}", blockers.join(", "))
+            }),
             message: if would_submit {
                 "Dry-run would submit if live auto were separately enabled; no order was sent."
                     .to_string()
@@ -3450,23 +4094,49 @@ impl AppService {
             .session_id
             .clone()
             .unwrap_or_else(|| format!("mnauto_stop_{}", Uuid::new_v4().simple()));
-        let flat_stop_blocker =
-            if status.mode == MainnetAutoRunMode::Live && status.risk_budget.require_flat_stop {
-                self.live_status().await.ok().and_then(|snapshot| {
-                    snapshot.account_snapshot.and_then(|account| {
-                        account
-                            .positions
-                            .into_iter()
-                            .find(|position| {
-                                position.symbol == Symbol::BtcUsdt
-                                    && position.position_amt.abs() > f64::EPSILON
-                            })
-                            .map(|_| "unexpected_position".to_string())
-                    })
-                })
-            } else {
-                None
-            };
+        let mut flat_stop_blocker = None;
+        if status.mode == MainnetAutoRunMode::Live && status.risk_budget.require_flat_stop {
+            match Box::pin(self.submit_mainnet_auto_reduce_only_close(
+                &session_id,
+                "mainnet_auto_flat_stop",
+                None,
+            ))
+            .await
+            {
+                Ok(close_result) => {
+                    if let Some(order) = close_result.order.as_ref() {
+                        status.last_order_id = Some(order.id.clone());
+                        if close_result.accepted {
+                            status.live_orders_submitted =
+                                status.live_orders_submitted.saturating_add(1);
+                        }
+                    }
+                    if !close_result.flat_confirmed {
+                        flat_stop_blocker = Some(
+                            close_result
+                                .blocker
+                                .unwrap_or_else(|| "unexpected_position".to_string()),
+                        );
+                        warn!(
+                            event = "mainnet_auto_flat_stop_failed",
+                            session_id = %session_id,
+                            message = %close_result.message,
+                            blocker = ?flat_stop_blocker,
+                            "MAINNET auto flat-stop did not reconcile flat"
+                        );
+                    }
+                }
+                Err(error) => {
+                    flat_stop_blocker = Some("mainnet_auto_flat_stop_failed".to_string());
+                    warn!(
+                        event = "mainnet_auto_flat_stop_failed",
+                        session_id = %session_id,
+                        detail = %error,
+                        "MAINNET auto flat-stop close failed before status stop"
+                    );
+                }
+            }
+        }
         status.state = if flat_stop_blocker.is_some() {
             MainnetAutoState::Degraded
         } else if reason == MainnetAutoStopReason::OperatorStop {
@@ -3541,6 +4211,40 @@ impl AppService {
             .iter()
             .filter(|decision| decision.would_submit)
             .count() as u64;
+        let desired_side_evaluations = session_decisions
+            .iter()
+            .filter(|decision| decision.desired_side.is_some())
+            .count() as u64;
+        let enter_decisions = session_decisions
+            .iter()
+            .filter(|decision| {
+                matches!(
+                    decision.policy_action,
+                    Some(MainnetAutoPolicyAction::EnterLong)
+                        | Some(MainnetAutoPolicyAction::EnterShort)
+                )
+            })
+            .count() as u64;
+        let hold_decisions = session_decisions
+            .iter()
+            .filter(|decision| decision.policy_action == Some(MainnetAutoPolicyAction::Hold))
+            .count() as u64;
+        let reverse_decisions = session_decisions
+            .iter()
+            .filter(|decision| decision.policy_action == Some(MainnetAutoPolicyAction::Reverse))
+            .count() as u64;
+        let no_trade_decisions = session_decisions
+            .iter()
+            .filter(|decision| decision.policy_action == Some(MainnetAutoPolicyAction::NoTrade))
+            .count() as u64;
+        let margin_type_block_count = session_decisions
+            .iter()
+            .filter(|decision| {
+                decision.blocking_reasons.iter().any(|reason| {
+                    reason == "margin_type_not_allowed" || reason == "margin_type_unknown"
+                })
+            })
+            .count() as u64;
         let decisions_blocked = session_decisions
             .iter()
             .filter(|decision| !decision.blocking_reasons.is_empty())
@@ -3574,8 +4278,11 @@ impl AppService {
             status.live_orders_submitted.to_string(),
         );
         let explanation = format!(
-            "# Mainnet Auto Lessons\n\nMode: {}\n\nLive orders submitted: {}\n\nSignals observed: {signals_observed}\n\nBlocked decisions: {decisions_blocked}\n\nWould-submit decisions: {would_submit_decisions}\n\nRecommendation: {recommendation}\n\nThis report is analysis only. It did not change strategy, risk settings, or live enablement.\n",
+            "# Mainnet Auto Lessons\n\nMode: {}\n\nPosition policy: {}\n\nMargin policy: actual={} allowed={}\n\nLive orders submitted: {}\n\nSignals observed: {signals_observed}\n\nDesired-side evaluations: {desired_side_evaluations}\n\nEnter decisions: {enter_decisions}\n\nHold decisions: {hold_decisions}\n\nReverse decisions: {reverse_decisions}\n\nNo-trade decisions: {no_trade_decisions}\n\nMargin-type blocks: {margin_type_block_count}\n\nBlocked decisions: {decisions_blocked}\n\nWould-submit decisions: {would_submit_decisions}\n\nRecommendation: {recommendation}\n\nThis report is analysis only. It did not change strategy, risk settings, or live enablement.\n",
             mode.as_str(),
+            status.position_policy.policy.as_str(),
+            status.margin_policy.actual_margin_type.as_str(),
+            status.margin_policy.allowed_margin_type.as_str(),
             if status.live_orders_submitted > 0 { "yes" } else { "no" }
         );
         let report = MainnetAutoLessonReport {
@@ -3583,7 +4290,14 @@ impl AppService {
             session_id: session_id.to_string(),
             mode,
             live_order_submitted: status.live_orders_submitted > 0,
+            position_policy: status.position_policy.policy,
             signals_observed,
+            desired_side_evaluations,
+            enter_decisions,
+            hold_decisions,
+            reverse_decisions,
+            no_trade_decisions,
+            margin_type_block_count,
             decisions_blocked,
             would_submit_decisions,
             duplicate_suppression_count,
@@ -5407,7 +6121,61 @@ impl AppService {
         Ok(())
     }
 
+    async fn maybe_mainnet_auto_evaluate_aso_policy(&self, point: AsoPoint) -> AppResult<()> {
+        if self.options.mainnet_auto_config.position_policy == AsoPositionPolicy::CrossoverOnly {
+            return Ok(());
+        }
+        if !point.ready {
+            return Ok(());
+        }
+        let auto_status = self.load_mainnet_auto_status_with_config().await?;
+        if auto_status.state != MainnetAutoState::LiveRunning {
+            return Ok(());
+        }
+        let live_status = self.live_status().await?;
+        let current_side = current_mainnet_position_side(&live_status, Symbol::BtcUsdt);
+        let (delta_threshold, zone_threshold) = self.aso_policy_thresholds();
+        let policy_decision = relxen_domain::evaluate_aso_position_policy(AsoPolicyInput {
+            policy: self.options.mainnet_auto_config.position_policy,
+            bulls: point.bulls,
+            bears: point.bears,
+            delta_threshold,
+            zone_threshold,
+            current_side,
+        });
+        let signal_side = match policy_decision.desired_side {
+            MainnetAutoDesiredSide::Long => SignalSide::Buy,
+            MainnetAutoDesiredSide::Short => SignalSide::Sell,
+            MainnetAutoDesiredSide::None => SignalSide::Buy,
+        };
+        let signal = SignalEvent {
+            id: format!(
+                "aso_policy_{}_{}",
+                self.options.mainnet_auto_config.position_policy.as_str(),
+                point.open_time
+            ),
+            symbol: Symbol::BtcUsdt,
+            timeframe: self.state.lock().await.settings.timeframe,
+            open_time: point.open_time,
+            side: signal_side,
+            bulls: point.bulls.unwrap_or_default(),
+            bears: point.bears.unwrap_or_default(),
+            closed_only: true,
+        };
+        self.maybe_mainnet_auto_execute_signal_with_policy(signal, Some(policy_decision))
+            .await
+    }
+
     async fn maybe_mainnet_auto_execute_signal(&self, signal: SignalEvent) -> AppResult<()> {
+        self.maybe_mainnet_auto_execute_signal_with_policy(signal, None)
+            .await
+    }
+
+    async fn maybe_mainnet_auto_execute_signal_with_policy(
+        &self,
+        signal: SignalEvent,
+        policy_decision_override: Option<AsoPolicyDecision>,
+    ) -> AppResult<()> {
         let mut auto_status = self.load_mainnet_auto_status_with_config().await?;
         if auto_status.state != MainnetAutoState::LiveRunning {
             return Ok(());
@@ -5434,6 +6202,7 @@ impl AppService {
                 blocking_reasons: Vec::new(),
                 would_submit: false,
                 message: "Unfinished candle signal ignored by MAINNET auto live.",
+                policy_decision: None,
             })
             .await?;
             return Ok(());
@@ -5448,16 +6217,52 @@ impl AppService {
             return Ok(());
         }
 
-        let live_status = self.live_status().await?;
+        let mut live_status = self.live_status().await?;
         let settings = self.state.lock().await.settings.clone();
         let reference = self
             .current_reference_price(LiveEnvironment::Mainnet, Symbol::BtcUsdt)
             .await;
+        let actual_margin_type = mainnet_symbol_margin_type(&live_status, Symbol::BtcUsdt);
+        let margin_policy = MainnetAutoMarginPolicyStatus::evaluate(
+            auto_status.config.allowed_margin_type,
+            actual_margin_type,
+        );
+        auto_status.margin_policy = margin_policy.clone();
+        let current_side = current_mainnet_position_side(&live_status, Symbol::BtcUsdt);
+        let policy_decision = policy_decision_override
+            .unwrap_or_else(|| self.policy_decision_from_signal(&signal, current_side));
+        self.update_auto_status_policy_decision(&mut auto_status, &policy_decision);
+        let order_slots_needed = match policy_decision.action {
+            MainnetAutoPolicyAction::Reverse => 2,
+            MainnetAutoPolicyAction::EnterLong
+            | MainnetAutoPolicyAction::EnterShort
+            | MainnetAutoPolicyAction::Close => 1,
+            MainnetAutoPolicyAction::Hold
+            | MainnetAutoPolicyAction::NoTrade
+            | MainnetAutoPolicyAction::Blocked => 0,
+        };
+        let order_cap = auto_status
+            .config
+            .max_orders
+            .min(risk_budget.max_orders_per_session);
+        if order_slots_needed > 0
+            && auto_status
+                .live_orders_submitted
+                .saturating_add(order_slots_needed)
+                > order_cap
+        {
+            self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::MaxOrdersReached)
+                .await?;
+            return Ok(());
+        }
         let mut blockers = Vec::<String>::new();
         if !auto_status.config.enable_live_execution
             || auto_status.config.mode != MainnetAutoRunMode::Live
         {
             blockers.push("mainnet_auto_config_disabled".to_string());
+        }
+        if let Some(blocker) = margin_policy.blocker {
+            blockers.push(blocker);
         }
         if live_status.kill_switch.engaged {
             self.stop_mainnet_auto_with_reason(MainnetAutoStopReason::KillSwitchEngaged)
@@ -5493,18 +6298,57 @@ impl AppService {
             if !shadow.open_orders.is_empty() {
                 blockers.push("open_order".to_string());
             }
-            if shadow.positions.iter().any(|position| {
+            let shadow_has_open_position = shadow.positions.iter().any(|position| {
                 position.symbol == Symbol::BtcUsdt
                     && Decimal::from_str(&position.position_amt).unwrap_or(Decimal::ZERO)
                         != Decimal::ZERO
-            }) {
-                blockers.push("open_position".to_string());
+            });
+            if shadow_has_open_position {
+                if policy_decision.policy == AsoPositionPolicy::CrossoverOnly {
+                    blockers.push("open_position".to_string());
+                } else {
+                    match policy_decision.action {
+                        MainnetAutoPolicyAction::Hold | MainnetAutoPolicyAction::Reverse => {}
+                        _ => blockers.push("open_position".to_string()),
+                    }
+                }
             }
         }
 
+        if matches!(
+            policy_decision.action,
+            MainnetAutoPolicyAction::NoTrade | MainnetAutoPolicyAction::Hold
+        ) {
+            let decision = self
+                .append_mainnet_auto_live_decision(MainnetAutoLiveDecisionInput {
+                    session_id: &session_id,
+                    outcome: MainnetAutoDecisionOutcome::SignalSeen,
+                    signal: &signal,
+                    reference: reference.snapshot.as_ref(),
+                    blocking_reasons: Vec::new(),
+                    would_submit: false,
+                    message: "MAINNET auto policy evaluated without a submit action.",
+                    policy_decision: Some(policy_decision.clone()),
+                })
+                .await?;
+            auto_status.last_decision_id = Some(decision.id);
+            auto_status.last_decision_outcome = Some(MainnetAutoDecisionOutcome::SignalSeen);
+            auto_status.current_blockers.clear();
+            auto_status.blocking_reasons.clear();
+            auto_status.last_signal_id = Some(signal.id);
+            auto_status.last_signal_open_time = Some(signal.open_time);
+            auto_status.last_heartbeat_at = Some(now_ms());
+            auto_status.updated_at = now_ms();
+            self.repository
+                .save_mainnet_auto_status(&auto_status)
+                .await?;
+            return Ok(());
+        }
+
         let lock_key = format!(
-            "mainnet_auto_live:{}:{}:{}:{}:{:?}",
+            "mainnet_auto_live:{}:{}:{}:{}:{}:{:?}",
             LiveEnvironment::Mainnet,
+            auto_status.config.position_policy.as_str(),
             signal.symbol,
             signal.timeframe,
             signal.open_time,
@@ -5524,6 +6368,7 @@ impl AppService {
                 blocking_reasons: vec!["duplicate_signal_detected".to_string()],
                 would_submit: false,
                 message: "Duplicate MAINNET auto live signal suppressed.",
+                policy_decision: Some(policy_decision.clone()),
             })
             .await?;
             return Ok(());
@@ -5545,6 +6390,49 @@ impl AppService {
             updated_at: now,
         };
         self.repository.upsert_live_intent_lock(&lock).await?;
+
+        if blockers.is_empty() && policy_decision.action == MainnetAutoPolicyAction::Reverse {
+            match Box::pin(self.submit_mainnet_auto_reduce_only_close(
+                &session_id,
+                "mainnet_auto_reverse_close",
+                Some(&signal),
+            ))
+            .await
+            {
+                Ok(close_result) => {
+                    if let Some(order) = close_result.order.as_ref() {
+                        auto_status.last_order_id = Some(order.id.clone());
+                        if close_result.accepted {
+                            auto_status.live_orders_submitted =
+                                auto_status.live_orders_submitted.saturating_add(1);
+                        }
+                    }
+                    if close_result.accepted && close_result.flat_confirmed {
+                        live_status = self.refresh_live_status_from_repository().await?;
+                    } else {
+                        blockers.push(close_result.blocker.unwrap_or_else(|| {
+                            "mainnet_auto_reverse_close_not_reconciled".to_string()
+                        }));
+                        warn!(
+                            event = "mainnet_auto_reverse_close_blocked",
+                            session_id = %session_id,
+                            message = %close_result.message,
+                            blockers = ?blockers,
+                            "MAINNET auto reverse close did not reconcile flat; entry is blocked"
+                        );
+                    }
+                }
+                Err(error) => {
+                    blockers.push("mainnet_auto_reverse_close_failed".to_string());
+                    warn!(
+                        event = "mainnet_auto_reverse_close_failed",
+                        session_id = %session_id,
+                        detail = %error,
+                        "MAINNET auto reverse close failed; entry is blocked"
+                    );
+                }
+            }
+        }
 
         let rules = live_status.symbol_rules.clone();
         let shadow = live_status.reconciliation.shadow.clone();
@@ -5614,6 +6502,7 @@ impl AppService {
                     blocking_reasons: blockers.clone(),
                     would_submit: false,
                     message: "MAINNET auto live signal blocked before submit.",
+                    policy_decision: Some(policy_decision.clone()),
                 })
                 .await?;
             auto_status.last_decision_id = Some(decision.id);
@@ -5685,6 +6574,7 @@ impl AppService {
                     .unwrap_or_default(),
                 would_submit: result.accepted,
                 message: &result.message,
+                policy_decision: Some(policy_decision.clone()),
             })
             .await?;
         auto_status.last_decision_id = Some(decision.id);
@@ -5726,6 +6616,7 @@ impl AppService {
             "timeframe".to_string(),
             settings.timeframe.as_str().to_string(),
         );
+        let policy_decision = input.policy_decision;
         let decision = MainnetAutoDecisionEvent {
             id: format!("mnauto_decision_{}", Uuid::new_v4().simple()),
             session_id: input.session_id.to_string(),
@@ -5745,6 +6636,21 @@ impl AppService {
             intent_hash: None,
             would_submit: input.would_submit,
             blocking_reasons: input.blocking_reasons,
+            policy_mode: policy_decision.as_ref().map(|decision| decision.policy),
+            aso_bulls: policy_decision.as_ref().and_then(|decision| decision.bulls),
+            aso_bears: policy_decision.as_ref().and_then(|decision| decision.bears),
+            aso_delta: policy_decision.as_ref().and_then(|decision| decision.delta),
+            aso_zone: policy_decision.as_ref().and_then(|decision| decision.zone),
+            desired_side: policy_decision
+                .as_ref()
+                .map(|decision| decision.desired_side),
+            current_position_side: policy_decision
+                .as_ref()
+                .map(|decision| decision.current_side),
+            policy_action: policy_decision.as_ref().map(|decision| decision.action),
+            policy_reason: policy_decision
+                .as_ref()
+                .map(|decision| decision.reason.clone()),
             message: input.message.to_string(),
             created_at: now_ms(),
         };
@@ -5761,6 +6667,7 @@ impl AppService {
     ) -> AppResult<()> {
         let mut persist_candle = None;
         let mut persist_signal = None;
+        let mut persist_aso_policy_point = None;
         let mut persist_wallets: Option<Vec<Wallet>> = None;
         let mut persist_position: Option<Option<Position>> = None;
         let mut new_trades: VecDeque<Trade> = VecDeque::new();
@@ -5809,6 +6716,7 @@ impl AppService {
                         point.clone(),
                         self.options.history_limit,
                     );
+                    persist_aso_policy_point = Some(point.clone());
                     publish_events.push(OutboundEvent::CandleClosed(event.candle.clone()));
                     publish_events.push(OutboundEvent::AsoUpdated(point.clone()));
 
@@ -5892,7 +6800,13 @@ impl AppService {
             let _ = self
                 .maybe_auto_execute_signal(signal.clone(), event.candle.close)
                 .await;
-            let _ = self.maybe_mainnet_auto_execute_signal(signal.clone()).await;
+            if self.options.mainnet_auto_config.position_policy == AsoPositionPolicy::CrossoverOnly
+            {
+                let _ = self.maybe_mainnet_auto_execute_signal(signal.clone()).await;
+            }
+        }
+        if let Some(point) = persist_aso_policy_point {
+            let _ = self.maybe_mainnet_auto_evaluate_aso_policy(point).await;
         }
         while let Some(trade) = new_trades.pop_front() {
             self.repository.append_trade(&trade).await?;
@@ -6387,7 +7301,7 @@ fn account_snapshot_to_shadow(snapshot: LiveAccountSnapshot, updated_at: i64) ->
                 position_amt: position.position_amt.to_string(),
                 entry_price: position.entry_price.to_string(),
                 unrealized_pnl: position.unrealized_pnl.to_string(),
-                margin_type: None,
+                margin_type: Some(position.margin_type.as_str().to_string()),
                 isolated_wallet: None,
                 updated_at,
             })
@@ -6465,6 +7379,7 @@ fn refresh_account_snapshot_from_shadow(
                 .iter()
                 .find(|existing| existing.symbol == position.symbol)
                 .and_then(|existing| existing.leverage),
+            margin_type: LiveMarginType::from_exchange_str(position.margin_type.as_deref()),
         })
         .collect();
     Some(snapshot)
@@ -6472,6 +7387,111 @@ fn refresh_account_snapshot_from_shadow(
 
 fn parse_shadow_number(value: &str) -> f64 {
     value.parse::<f64>().unwrap_or_default()
+}
+
+fn mainnet_symbol_margin_type(status: &LiveStatusSnapshot, symbol: Symbol) -> LiveMarginType {
+    if let Some(margin_type) = status
+        .account_snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            snapshot
+                .positions
+                .iter()
+                .find(|position| position.symbol == symbol)
+                .map(|position| position.margin_type)
+        })
+        .filter(|margin_type| *margin_type != LiveMarginType::Unknown)
+    {
+        return margin_type;
+    }
+    status
+        .reconciliation
+        .shadow
+        .as_ref()
+        .and_then(|shadow| {
+            shadow
+                .positions
+                .iter()
+                .find(|position| position.symbol == symbol)
+                .and_then(|position| position.margin_type.as_deref())
+        })
+        .map(|value| LiveMarginType::from_exchange_str(Some(value)))
+        .unwrap_or_default()
+}
+
+fn mainnet_open_order_exists(status: &LiveStatusSnapshot, symbol: Symbol) -> bool {
+    status.execution.recent_orders.iter().any(|order| {
+        order.environment == LiveEnvironment::Mainnet
+            && order.symbol == symbol
+            && order.status.is_open()
+    }) || status.reconciliation.shadow.as_ref().is_some_and(|shadow| {
+        shadow
+            .open_orders
+            .iter()
+            .any(|order| order.symbol == symbol)
+    })
+}
+
+fn mainnet_position_amount_decimal(status: &LiveStatusSnapshot, symbol: Symbol) -> Decimal {
+    if let Some(amount) = status.reconciliation.shadow.as_ref().and_then(|shadow| {
+        shadow
+            .positions
+            .iter()
+            .find(|position| position.symbol == symbol)
+            .and_then(|position| Decimal::from_str(&position.position_amt).ok())
+    }) {
+        return amount;
+    }
+    status
+        .account_snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            snapshot
+                .positions
+                .iter()
+                .find(|position| position.symbol == symbol)
+                .and_then(|position| Decimal::from_str(&position.position_amt.to_string()).ok())
+        })
+        .unwrap_or(Decimal::ZERO)
+}
+
+fn current_mainnet_position_side(
+    status: &LiveStatusSnapshot,
+    symbol: Symbol,
+) -> MainnetAutoDesiredSide {
+    if let Some(side) = status.account_snapshot.as_ref().and_then(|snapshot| {
+        snapshot
+            .positions
+            .iter()
+            .find(|position| position.symbol == symbol)
+            .map(|position| side_from_position_amount(position.position_amt))
+    }) {
+        return side;
+    }
+    status
+        .reconciliation
+        .shadow
+        .as_ref()
+        .and_then(|shadow| {
+            shadow
+                .positions
+                .iter()
+                .find(|position| position.symbol == symbol)
+                .map(|position| {
+                    side_from_position_amount(parse_shadow_number(&position.position_amt))
+                })
+        })
+        .unwrap_or_default()
+}
+
+fn side_from_position_amount(amount: f64) -> MainnetAutoDesiredSide {
+    if amount > f64::EPSILON {
+        MainnetAutoDesiredSide::Long
+    } else if amount < -f64::EPSILON {
+        MainnetAutoDesiredSide::Short
+    } else {
+        MainnetAutoDesiredSide::None
+    }
 }
 
 struct LiveStatusBuildInput<'a> {

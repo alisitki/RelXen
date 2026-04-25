@@ -22,12 +22,12 @@ use relxen_domain::{
     LiveAssetBalance, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
     LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
     LiveEnvironment, LiveExecutionRequest, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock,
-    LiveKillSwitchState, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
-    LiveOrderType, LiveReconciliationStatus, LiveRiskProfile, LiveStateRecord,
-    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent,
-    MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget, MainnetAutoStatus,
-    MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
-    Trade, Wallet,
+    LiveKillSwitchState, LiveMarginType, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide,
+    LiveOrderStatus, LiveOrderType, LivePositionSnapshot, LiveReconciliationStatus,
+    LiveRiskProfile, LiveStateRecord, LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent,
+    LogEvent, MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget,
+    MainnetAutoStatus, MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol,
+    SystemMetrics, Timeframe, Trade, Wallet,
 };
 use relxen_infra::{EventBus, MemorySecretStore};
 use relxen_server::{build_router, RouterState};
@@ -616,7 +616,16 @@ impl LiveExchangePort for ServerFakeLiveExchange {
                 available_balance: 900.0,
                 unrealized_pnl: 0.0,
             }],
-            positions: Vec::new(),
+            positions: vec![LivePositionSnapshot {
+                symbol: Symbol::BtcUsdt,
+                position_side: "BOTH".to_string(),
+                position_amt: 0.0,
+                entry_price: 0.0,
+                mark_price: None,
+                unrealized_pnl: 0.0,
+                leverage: Some(5.0),
+                margin_type: LiveMarginType::Isolated,
+            }],
             fetched_at: now_ms(),
         })
     }
@@ -1475,6 +1484,10 @@ async fn mainnet_auto_status_and_live_start_are_blocked_by_default() {
     let status = response_json(status_response).await;
     assert_eq!(status["state"], "disabled");
     assert_eq!(status["config"]["enable_live_execution"], false);
+    assert_eq!(status["config"]["allowed_margin_type"], "isolated");
+    assert_eq!(status["config"]["position_policy"], "crossover_only");
+    assert_eq!(status["margin_policy"]["actual_margin_type"], "unknown");
+    assert_eq!(status["position_policy"]["policy"], "crossover_only");
 
     let start_response = router
         .oneshot(

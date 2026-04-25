@@ -4,14 +4,15 @@ use std::sync::atomic::Ordering;
 
 use relxen_app::{AppMetadata, AppService, LiveDependencies, Repository, ServiceOptions};
 use relxen_domain::{
-    AsoMode, Candle, CreateLiveCredentialRequest, LiveAutoExecutorRequest,
+    AsoMode, AsoPositionPolicy, Candle, CreateLiveCredentialRequest, LiveAutoExecutorRequest,
     LiveAutoExecutorStateKind, LiveBlockingReason, LiveCancelRequest,
     LiveCredentialValidationStatus, LiveEnvironment, LiveExecutionRequest, LiveFillRecord,
-    LiveKillSwitchRequest, LiveOrderSide, LiveOrderStatus, LiveOrderType, LiveRiskLimits,
-    LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder, LiveShadowPosition,
-    LiveShadowStreamState, LiveUserDataEvent, MainnetAutoConfig, MainnetAutoDecisionOutcome,
-    MainnetAutoLiveStartRequest, MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState,
-    Settings, Symbol, Timeframe, MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
+    LiveKillSwitchRequest, LiveMarginType, LiveOrderSide, LiveOrderStatus, LiveOrderType,
+    LiveRiskLimits, LiveRiskProfile, LiveRuntimeState, LiveShadowBalance, LiveShadowOrder,
+    LiveShadowPosition, LiveShadowStreamState, LiveUserDataEvent, MainnetAutoAllowedMarginType,
+    MainnetAutoConfig, MainnetAutoDecisionOutcome, MainnetAutoLiveStartRequest,
+    MainnetAutoRiskBudget, MainnetAutoRunMode, MainnetAutoState, Settings, Symbol, Timeframe,
+    MAINNET_AUTO_LIVE_CONFIRMATION_TEXT,
 };
 use rust_decimal::Decimal;
 
@@ -105,7 +106,7 @@ async fn mainnet_live_auto_service_with(
             Symbol::BtcUsdt,
             Timeframe::M1,
             open_time - Timeframe::M1.duration_ms(),
-            40.0,
+            60.0,
             true,
         ),
         candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 60.0, true),
@@ -208,6 +209,10 @@ fn live_auto_options() -> ServiceOptions {
             require_manual_canary_evidence: false,
             evidence_required: true,
             lesson_report_required: true,
+            allowed_margin_type: MainnetAutoAllowedMarginType::Isolated,
+            position_policy: AsoPositionPolicy::CrossoverOnly,
+            aso_delta_threshold: "5".to_string(),
+            aso_zone_threshold: "55".to_string(),
         },
         ..ServiceOptions::default()
     }
@@ -230,7 +235,36 @@ fn live_auto_start_request() -> MainnetAutoLiveStartRequest {
         duration_minutes: 15,
         order_type: LiveOrderType::Market,
         confirmation_text: MAINNET_AUTO_LIVE_CONFIRMATION_TEXT.to_string(),
+        allowed_margin_type: MainnetAutoAllowedMarginType::Isolated,
+        position_policy: AsoPositionPolicy::CrossoverOnly,
+        aso_delta_threshold: "5".to_string(),
+        aso_zone_threshold: "55".to_string(),
     }
+}
+
+fn live_auto_start_request_with_policy(
+    allowed_margin_type: MainnetAutoAllowedMarginType,
+    position_policy: AsoPositionPolicy,
+) -> MainnetAutoLiveStartRequest {
+    MainnetAutoLiveStartRequest {
+        allowed_margin_type,
+        position_policy,
+        ..live_auto_start_request()
+    }
+}
+
+fn mainnet_account_with_margin_type(
+    margin_type: LiveMarginType,
+) -> relxen_domain::LiveAccountSnapshot {
+    let mut account = support::fake_account_snapshot(LiveEnvironment::Mainnet);
+    if let Some(position) = account
+        .positions
+        .iter_mut()
+        .find(|position| position.symbol == Symbol::BtcUsdt)
+    {
+        position.margin_type = margin_type;
+    }
+    account
 }
 
 fn mainnet_shadow_with(
@@ -266,7 +300,7 @@ fn mainnet_shadow_position(amount: &str) -> LiveShadowPosition {
         position_amt: amount.to_string(),
         entry_price: "2000".to_string(),
         unrealized_pnl: "0".to_string(),
-        margin_type: None,
+        margin_type: Some(LiveMarginType::Isolated.as_str().to_string()),
         isolated_wallet: None,
         updated_at: relxen_app::now_ms(),
     }
@@ -1349,6 +1383,15 @@ async fn mainnet_auto_dry_run_records_decision_without_order_submission() {
     let lessons = service.latest_mainnet_auto_lessons().await.unwrap();
     assert!(lessons.is_some());
     assert!(!lessons.unwrap().live_order_submitted);
+    let evidence = service.export_mainnet_auto_evidence().await.unwrap();
+    assert!(evidence.files.contains(&"position_policy.json".to_string()));
+    assert!(evidence.files.contains(&"margin_policy.json".to_string()));
+    assert!(evidence
+        .files
+        .contains(&"aso_policy_decisions.json".to_string()));
+    assert!(std::path::Path::new(&evidence.path)
+        .join("position_policy.json")
+        .is_file());
 
     let duplicate_status = service.start_mainnet_auto_dry_run().await.unwrap();
     assert_eq!(
@@ -1415,8 +1458,428 @@ async fn mainnet_auto_live_start_runs_session_without_immediate_order() {
     assert_eq!(status.state, MainnetAutoState::LiveRunning);
     assert_eq!(status.mode, MainnetAutoRunMode::Live);
     assert_eq!(status.live_orders_submitted, 0);
+    assert_eq!(
+        status.margin_policy.actual_margin_type,
+        LiveMarginType::Isolated
+    );
+    assert_eq!(
+        status.config.position_policy,
+        AsoPositionPolicy::CrossoverOnly
+    );
     assert!(status.expires_at.is_some());
     assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_start_blocks_cross_margin_when_isolated_required() {
+    let mut fake = FakeLiveExchange {
+        account: Some(mainnet_account_with_margin_type(LiveMarginType::Cross)),
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), Vec::new(), live_auto_options()).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    assert_ne!(status.state, MainnetAutoState::LiveRunning);
+    assert_eq!(
+        status.margin_policy.actual_margin_type,
+        LiveMarginType::Cross
+    );
+    assert!(status
+        .current_blockers
+        .contains(&"margin_type_not_allowed".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_start_accepts_cross_only_when_explicitly_allowed() {
+    let mut fake = FakeLiveExchange {
+        account: Some(mainnet_account_with_margin_type(LiveMarginType::Cross)),
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.allowed_margin_type = MainnetAutoAllowedMarginType::Cross;
+    let service = mainnet_live_auto_service_with(exchange.clone(), Vec::new(), options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request_with_policy(
+            MainnetAutoAllowedMarginType::Cross,
+            AsoPositionPolicy::CrossoverOnly,
+        )))
+        .await
+        .unwrap();
+
+    assert_eq!(status.state, MainnetAutoState::LiveRunning);
+    assert_eq!(
+        status.margin_policy.actual_margin_type,
+        LiveMarginType::Cross
+    );
+    assert!(status.margin_policy.allowed);
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_start_allows_configured_leverage_up_to_100x() {
+    let mut account = mainnet_account_with_margin_type(LiveMarginType::Isolated);
+    if let Some(position) = account
+        .positions
+        .iter_mut()
+        .find(|position| position.symbol == Symbol::BtcUsdt)
+    {
+        position.leverage = Some(100.0);
+    }
+    let mut fake = FakeLiveExchange {
+        account: Some(account),
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), Vec::new(), live_auto_options()).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(MainnetAutoRiskBudget {
+            max_leverage: "100".to_string(),
+            ..live_auto_risk_budget()
+        })
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    assert_eq!(status.state, MainnetAutoState::LiveRunning);
+    assert!(!status
+        .current_blockers
+        .contains(&"leverage_above_max".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_start_blocks_leverage_above_100x_cap() {
+    let mut account = mainnet_account_with_margin_type(LiveMarginType::Isolated);
+    if let Some(position) = account
+        .positions
+        .iter_mut()
+        .find(|position| position.symbol == Symbol::BtcUsdt)
+    {
+        position.leverage = Some(101.0);
+    }
+    let mut fake = FakeLiveExchange {
+        account: Some(account),
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), Vec::new(), live_auto_options()).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(MainnetAutoRiskBudget {
+            max_leverage: "100".to_string(),
+            ..live_auto_risk_budget()
+        })
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    assert_ne!(status.state, MainnetAutoState::LiveRunning);
+    assert!(status
+        .current_blockers
+        .contains(&"leverage_above_max".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mainnet_auto_live_start_blocks_unknown_margin_type() {
+    let mut account = mainnet_account_with_margin_type(LiveMarginType::Unknown);
+    account.positions.clear();
+    let mut fake = FakeLiveExchange {
+        account: Some(account),
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), Vec::new(), live_auto_options()).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    let status = service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    assert_ne!(status.state, MainnetAutoState::LiveRunning);
+    assert!(status
+        .current_blockers
+        .contains(&"margin_type_unknown".to_string()));
+    assert!(exchange.submitted_orders.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn always_in_market_enters_from_latest_closed_aso_state_with_mocked_adapter_only() {
+    let mut fake = FakeLiveExchange::default();
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.position_policy = AsoPositionPolicy::AlwaysInMarket;
+    let service = mainnet_live_auto_service_with(exchange.clone(), Vec::new(), options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request_with_policy(
+            MainnetAutoAllowedMarginType::Isolated,
+            AsoPositionPolicy::AlwaysInMarket,
+        )))
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    let submitted = loop {
+        let submitted = exchange.submitted_orders.lock().await.clone();
+        if !submitted.is_empty() {
+            break submitted;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let status = service.mainnet_auto_status().await.unwrap();
+            let decisions = service.list_mainnet_auto_decisions(10).await.unwrap();
+            panic!("timed out waiting for always-in-market order; status={status:?} decisions={decisions:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].environment, LiveEnvironment::Mainnet);
+    assert_eq!(submitted[0].order_type, LiveOrderType::Market);
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(
+        status.position_policy.last_action,
+        relxen_domain::MainnetAutoPolicyAction::EnterLong
+    );
+}
+
+#[tokio::test]
+async fn always_in_market_reverses_by_closing_flat_then_entering_opposite_side() {
+    let mut fake = FakeLiveExchange {
+        auto_fill_market_orders: true,
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let mut options = live_auto_options();
+    options.mainnet_auto_config.position_policy = AsoPositionPolicy::AlwaysInMarket;
+    let open_time = latest_closed_open_time(Timeframe::M1) + Timeframe::M1.duration_ms();
+    let event = stream_event(
+        candle_with_bull_at_open_time(Symbol::BtcUsdt, Timeframe::M1, open_time, 20.0, true),
+        true,
+    );
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), vec![vec![Ok(event)]], options).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request_with_policy(
+            MainnetAutoAllowedMarginType::Isolated,
+            AsoPositionPolicy::AlwaysInMarket,
+        )))
+        .await
+        .unwrap();
+    service.refresh_live_shadow().await.unwrap();
+
+    service.start_runtime().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let submitted = loop {
+        let submitted = exchange.submitted_orders.lock().await.clone();
+        if submitted.len() >= 3 {
+            break submitted;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let status = service.mainnet_auto_status().await.unwrap();
+            let decisions = service.list_mainnet_auto_decisions(20).await.unwrap();
+            panic!(
+                "timed out waiting for always-in-market reverse; submitted={submitted:?} status={status:?} decisions={decisions:?}"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    service.stop_runtime().await.unwrap();
+    service.refresh_live_shadow().await.unwrap();
+
+    assert_eq!(submitted[0].side, LiveOrderSide::Buy);
+    assert!(!submitted[0].reduce_only);
+    assert_eq!(submitted[1].side, LiveOrderSide::Sell);
+    assert!(submitted[1].reduce_only);
+    assert_eq!(submitted[2].side, LiveOrderSide::Sell);
+    assert!(!submitted[2].reduce_only);
+    let status = service.mainnet_auto_status().await.unwrap();
+    assert_eq!(status.live_orders_submitted, 3);
+    assert_eq!(
+        status.position_policy.last_action,
+        relxen_domain::MainnetAutoPolicyAction::Reverse
+    );
+    let live_status = service.live_status().await.unwrap();
+    let amount = live_status
+        .account_snapshot
+        .as_ref()
+        .and_then(|account| {
+            account
+                .positions
+                .iter()
+                .find(|position| position.symbol == Symbol::BtcUsdt)
+                .map(|position| position.position_amt)
+        })
+        .unwrap_or_default();
+    assert!(amount < 0.0);
+}
+
+#[tokio::test]
+async fn mainnet_auto_stop_flattens_open_position_when_state_is_coherent() {
+    let mut fake = FakeLiveExchange {
+        auto_fill_market_orders: true,
+        ..FakeLiveExchange::default()
+    };
+    let mut rules = fake_symbol_rules(LiveEnvironment::Mainnet, Symbol::BtcUsdt);
+    rules.filters.min_notional = Some(50.0);
+    fake.rules = Some(rules);
+    fake.reference_price = std::sync::Mutex::new(Some(fake_reference_price(
+        LiveEnvironment::Mainnet,
+        Symbol::BtcUsdt,
+        "2000",
+    )));
+    let exchange = arc(fake);
+    let service =
+        mainnet_live_auto_service_with(exchange.clone(), Vec::new(), live_auto_options()).await;
+    create_valid_credential_for(&service, LiveEnvironment::Mainnet).await;
+    service
+        .configure_mainnet_auto_risk_budget(live_auto_risk_budget())
+        .await
+        .unwrap();
+    service.start_live_shadow().await.unwrap();
+    service
+        .start_mainnet_auto_live(Some(live_auto_start_request()))
+        .await
+        .unwrap();
+
+    *exchange.simulated_position_amt.lock().await = Some(0.001);
+    service.refresh_live_shadow().await.unwrap();
+
+    let status = service.stop_mainnet_auto().await.unwrap();
+
+    assert_eq!(status.state, MainnetAutoState::Stopped);
+    assert_eq!(status.live_orders_submitted, 1);
+    assert!(!status
+        .current_blockers
+        .iter()
+        .any(|blocker| blocker == "unexpected_position"
+            || blocker == "mainnet_auto_position_not_flat"));
+    let submitted = exchange.submitted_orders.lock().await.clone();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].side, LiveOrderSide::Sell);
+    assert!(submitted[0].reduce_only);
+    let live_status = service.live_status().await.unwrap();
+    let amount = live_status
+        .account_snapshot
+        .as_ref()
+        .and_then(|account| {
+            account
+                .positions
+                .iter()
+                .find(|position| position.symbol == Symbol::BtcUsdt)
+                .map(|position| position.position_amt)
+        })
+        .unwrap_or_default();
+    assert_eq!(amount, 0.0);
 }
 
 #[tokio::test]

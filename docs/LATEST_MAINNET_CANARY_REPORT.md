@@ -2,7 +2,7 @@
 
 ## Report Status
 
-Status: GO for mainnet-canary closure / operator handoff; MAINNET auto dry-run infrastructure added afterward with live mode still disabled.
+Status: GO for mainnet-canary closure / operator handoff; MAINNET auto dry-run infrastructure and one no-order live trial were added afterward with live mode still disabled by default.
 
 Date: 2026-04-24
 
@@ -12,7 +12,7 @@ Second-canary evidence bundle: `artifacts/mainnet-canary/20260424T122751Z-second
 
 Credential source: env-backed `env-mainnet`, masked only.
 
-MAINNET canary server gate was enabled only after reference-price hardening tests, leverage, balance, local-risk, and initial-preview gates passed. MAINNET auto-execution remained blocked. Exactly one manual MAINNET `LIMIT` canary was submitted, canceled, reconciled, and restart-repair checked. The server canary flag was disabled afterward. MAINNET auto now has dry-run/status/evidence infrastructure and a gated future live-session support path, but live MAINNET auto remains default-off and was not run.
+MAINNET canary server gate was enabled only after reference-price hardening tests, leverage, balance, local-risk, and initial-preview gates passed. MAINNET auto-execution remained blocked during the canary phase. Exactly one manual MAINNET `LIMIT` canary was submitted, canceled, reconciled, and restart-repair checked. The server canary flag was disabled afterward. MAINNET auto now has dry-run/status/evidence infrastructure and a gated session-scoped live path; the first later live-auto trial submitted no order and recorded no fill, and live MAINNET auto remains default-off.
 
 ## Outcome
 
@@ -216,7 +216,9 @@ Live start remains fail-closed by default because `RELXEN_ENABLE_MAINNET_AUTO_EX
 
 The first credential-selected operator-DB dry-run is `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated `env-mainnet`, refreshed mainnet readiness/shadow, used dry-run budget `mainnet-auto-operator-dry-run-v1`, recorded `dry_run_would_submit`, generated lessons, verified live start remained `config_blocked`, and submitted no order.
 
-Mainnet Auto Live Support v1 was implemented afterward for a future explicit `BTCUSDT` 15-minute `MARKET` session with exact session confirmation and watchdog/risk gates. It was tested with mocked adapters only. No real MAINNET auto order was submitted.
+Mainnet Auto Live Support v1 was implemented afterward for explicit `BTCUSDT` 15-minute `MARKET` sessions with exact session confirmation and watchdog/risk gates. It was tested with mocked adapters, then exercised once on 2026-04-25. Session `mnauto_live_39b61e12f8084f669b334420a3f105ac` stopped at `max_runtime_reached`, observed zero signals, submitted no order, recorded no fill, and ended flat. Evidence: `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`.
+
+Mainnet Auto Policy Support v1 was added after that no-order live trial without submitting any new order. It makes cross/isolated margin type an explicit gate (`isolated` default, `cross` only when explicitly allowed, `unknown` blocked) and exposes ASO position policy modes `crossover_only`, `always_in_market`, and `flat_allowed` for a future explicit live-auto batch.
 
 ## Final Verdict
 

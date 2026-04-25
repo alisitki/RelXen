@@ -180,6 +180,18 @@ export type MainnetAutoState =
   | "degraded"
   | "error";
 export type MainnetAutoRunMode = "dry_run" | "live";
+export type LiveMarginType = "cross" | "isolated" | "unknown";
+export type MainnetAutoAllowedMarginType = "isolated" | "cross" | "any";
+export type AsoPositionPolicy = "crossover_only" | "always_in_market" | "flat_allowed";
+export type MainnetAutoDesiredSide = "long" | "short" | "none";
+export type MainnetAutoPolicyAction =
+  | "enter_long"
+  | "enter_short"
+  | "hold"
+  | "close"
+  | "reverse"
+  | "no_trade"
+  | "blocked";
 export type MainnetAutoDecisionOutcome =
   | "signal_seen"
   | "skipped_unfinished_candle"
@@ -381,6 +393,10 @@ export interface MainnetAutoConfig {
   require_manual_canary_evidence: boolean;
   evidence_required: boolean;
   lesson_report_required: boolean;
+  allowed_margin_type: MainnetAutoAllowedMarginType;
+  position_policy: AsoPositionPolicy;
+  aso_delta_threshold: string;
+  aso_zone_threshold: string;
 }
 
 export interface MainnetAutoRiskBudget {
@@ -416,12 +432,37 @@ export interface MainnetAutoWatchdogStatus {
   last_message: string | null;
 }
 
+export interface MainnetAutoMarginPolicyStatus {
+  allowed_margin_type: MainnetAutoAllowedMarginType;
+  actual_margin_type: LiveMarginType;
+  allowed: boolean;
+  blocker: string | null;
+  warning: string | null;
+}
+
+export interface MainnetAutoPositionPolicyStatus {
+  policy: AsoPositionPolicy;
+  aso_delta_threshold: string;
+  aso_zone_threshold: string;
+  last_bulls: number | null;
+  last_bears: number | null;
+  last_delta: number | null;
+  last_zone: number | null;
+  desired_side: MainnetAutoDesiredSide;
+  current_side: MainnetAutoDesiredSide;
+  last_action: MainnetAutoPolicyAction;
+  last_blocker: string | null;
+  last_reason: string | null;
+}
+
 export interface MainnetAutoStatus {
   state: MainnetAutoState;
   mode: MainnetAutoRunMode;
   config: MainnetAutoConfig;
   risk_budget: MainnetAutoRiskBudget;
   watchdog: MainnetAutoWatchdogStatus;
+  margin_policy: MainnetAutoMarginPolicyStatus;
+  position_policy: MainnetAutoPositionPolicyStatus;
   session_id: string | null;
   started_at: number | null;
   expires_at: number | null;
@@ -453,6 +494,15 @@ export interface MainnetAutoDecisionEvent {
   closed_candle_open_time: number | null;
   signal_id: string | null;
   signal_side: SignalSide | null;
+  policy_mode: AsoPositionPolicy | null;
+  aso_bulls: number | null;
+  aso_bears: number | null;
+  aso_delta: number | null;
+  aso_zone: number | null;
+  desired_side: MainnetAutoDesiredSide | null;
+  current_position_side: MainnetAutoDesiredSide | null;
+  policy_action: MainnetAutoPolicyAction | null;
+  policy_reason: string | null;
   would_submit: boolean;
   blocking_reasons: string[];
   message: string;
@@ -464,7 +514,14 @@ export interface MainnetAutoLessonReport {
   session_id: string;
   mode: MainnetAutoRunMode;
   live_order_submitted: boolean;
+  position_policy: AsoPositionPolicy;
   signals_observed: number;
+  desired_side_evaluations: number;
+  enter_decisions: number;
+  hold_decisions: number;
+  reverse_decisions: number;
+  no_trade_decisions: number;
+  margin_type_block_count: number;
   decisions_blocked: number;
   would_submit_decisions: number;
   duplicate_suppression_count: number;
@@ -504,6 +561,7 @@ export interface LivePositionSnapshot {
   mark_price: number | null;
   unrealized_pnl: number;
   leverage: number | null;
+  margin_type: LiveMarginType;
 }
 
 export interface LiveAccountSnapshot {

@@ -9,7 +9,7 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Paper Mode V1 is release-candidate complete.
 - Paper mode remains complete and isolated.
 - Live foundations are implemented for credential metadata, OS secure storage, explicit local env credential loading, signed read-only validation, account snapshots, active-symbol rules, readiness checks, arming, user-data shadow sync, order-intent preview, testnet `order/test` preflight, constrained TESTNET order/cancel/flatten, closed-candle TESTNET auto-execution, and manual MAINNET canary execution behind explicit canary gates.
-- MAINNET execution is disabled by default. MAINNET auto infrastructure now exists for dry-run/status/evidence/lesson reporting and a gated future live-session path, but live MAINNET auto execution remains config-blocked by default and was not run.
+- MAINNET execution is disabled by default. MAINNET auto infrastructure now exists for dry-run/status/evidence/lesson reporting and gated session-scoped live runs. The first explicit 15-minute `BTCUSDT` live-auto run completed on 2026-04-25 with no signal, no submitted order, no fill, watchdog stop `max_runtime_reached`, and final flat state; live MAINNET auto remains config-blocked by default outside that session.
 - A real TESTNET soak was completed on 2026-04-23 and captured under `artifacts/testnet-soak/20260423T1455Z-real-testnet-soak/`.
 - Env-backed credential validation evidence was captured on 2026-04-24 under `artifacts/testnet-soak/20260424T061338Z-env-credential-validation/`.
 - A 2026-04-24 MAINNET canary retry after reference-price hardening submitted exactly one guarded `BTCUSDT` non-marketable `LIMIT` order, canceled it, reconciled flat with no fills, passed restart repair, and disabled the canary flag afterward; evidence is under `artifacts/mainnet-canary/20260424T092625Z-reference-price-fixed/`.
@@ -18,7 +18,9 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 - Mainnet canary closure is complete. `docs/OPERATOR_HANDOFF.md` is the current operator handoff for safe startup, status inspection, evidence locations, and default-off mainnet posture.
 - MAINNET auto dry-run infrastructure adds `/api/live/mainnet-auto/status`, dry-run start/stop, decisions, lessons, risk-budget, and evidence-export endpoints. Dry-run can record ASO closed-candle decision outcomes and watchdog/risk blockers without submitting orders.
 - A credential-selected operator-DB MAINNET auto dry-run completed under `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected and validated masked `env-mainnet`, refreshed mainnet readiness/shadow, recorded one `dry_run_would_submit` decision, produced lessons/evidence, verified live start remained config-blocked, and submitted no order.
-- Mainnet Auto Live Support v1 implements the live start path with `BTCUSDT`, 15 minutes, `MARKET`, exact session confirmation, closed-candle ASO processing, one-in-flight/flat-start gates, watchdog stop, evidence logging, and lesson reporting. The operator-start helper now matches the requested terminal flags and refuses to start unless the running server is already in session-scoped live-auto mode. Codex did not start a real MAINNET auto session during this preparation.
+- Mainnet Auto Live Support v1 implements the live start path with `BTCUSDT`, 15 minutes, `MARKET`, exact session confirmation, closed-candle ASO processing, one-in-flight/flat-start gates, watchdog stop, evidence logging, and lesson reporting. The operator-start helper matches the requested terminal flags and refuses to start unless the running server is already in session-scoped live-auto mode. The first real run evidence is `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`; it submitted no order and recorded no fill.
+- Mainnet Auto Policy Support v1 adds explicit `cross` / `isolated` / `unknown` margin-type status and gating. `isolated` is the default allowed margin type; `cross` must be explicitly allowed; `unknown` blocks. ASO position policy defaults to `crossover_only`, with optional `always_in_market` and `flat_allowed` modes exposed in status/evidence/lessons.
+- MAINNET auto reverse/flat-stop hardening adds mocked support for `always_in_market` reduce-only close, flat reconciliation, and opposite entry only after flat is confirmed. The live-auto leverage budget gate accepts explicit values up to `100x` and rejects values above `100x`. No live order was submitted in this hardening batch.
 - The repository can place TESTNET matching-engine `MARKET` / `LIMIT` orders only after explicit operator confirmation or explicit TESTNET auto start, with fail-closed gates.
 - The repository can place a MAINNET canary `LIMIT` order only when `RELXEN_ENABLE_MAINNET_CANARY_EXECUTION=true`, a risk profile is configured, exact confirmation text is entered, the rounded price is non-marketable, and all execution/reconciliation gates pass. `MARKET` is blocked for the first MAINNET canary.
 - The repository stores live credential metadata and source in SQLite. Raw secure-store secrets stay in OS secure storage; raw env secrets stay process-only when `RELXEN_CREDENTIAL_SOURCE=env` is explicitly enabled. In authoritative env-source mode, TESTNET env credentials take precedence at startup over persisted secure-store TESTNET active selections; MAINNET env credentials still require explicit selection.
@@ -41,15 +43,17 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 ## Glossary
 
 - Paper mode: Local simulated execution using market data, local wallets, local positions, and no real orders.
-- Live mode: Exchange-connected mode. In this repository state, TESTNET execution, default-off manual MAINNET canary execution, and MAINNET auto dry-run infrastructure exist; live MAINNET auto remains blocked.
+- Live mode: Exchange-connected mode. In this repository state, TESTNET execution, default-off manual MAINNET canary execution, MAINNET auto dry-run infrastructure, and one completed session-scoped MAINNET auto live trial exist; live MAINNET auto remains blocked by default outside explicit bounded sessions.
 - Validation: A precondition check that proves a credential, rule set, account snapshot, setting, or intent is safe enough to proceed.
 - Order intent: Internal instruction describing desired side, quantity, reduce-only behavior, and reason before exchange formatting.
 - Preflight: Binance testnet `order/test` validation of a signed order payload. It validates request shape and exchange acceptance rules but does not place an order.
 - Shadow state: Read-only best-effort account, position, order, and stream state reconstructed from REST and user-data events.
-- Execution: The act of sending an order request to an exchange adapter. Current execution is operator-confirmed for TESTNET and default-off manual MAINNET canary; MAINNET auto remains blocked.
+- Execution: The act of sending an order request to an exchange adapter. Current execution is operator-confirmed for TESTNET, default-off manual MAINNET canary, and default-off session-scoped MAINNET auto only when a separate explicit live batch enables it.
 - Reconciliation: Comparing exchange order, fill, account, and position state against local state until live truth is known.
 - Precision: Numeric representation and rounding discipline for prices, quantities, fees, notional, and PnL.
 - Risk gate: A blocking policy check that must pass before arming, starting, or submitting an order.
+- Margin type policy: MAINNET auto gate for active-symbol cross/isolated margin. This is not the same as single-asset/multi-assets account mode.
+- ASO position policy: MAINNET auto interpretation of closed-candle ASO state: `crossover_only`, `always_in_market`, or `flat_allowed`.
 - Fail-closed: Default behavior that blocks execution when state is missing, ambiguous, stale, or invalid.
 - Armed/disarmed: Operator-controlled live readiness state. Disarmed means no live order may be placed.
 - Kill switch: Operator or system action that immediately blocks new live orders and allows only safe recovery actions when deterministic.
@@ -82,7 +86,8 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 
 - Broad mainnet operation beyond manual canary execution.
 - Conditional/algo orders.
-- Live MAINNET auto-execution by default. The support path exists; a real live auto run still requires a separate explicit execution task.
+- Live MAINNET auto-execution by default. The support path exists and one bounded run has completed; any repeat live auto run still requires a separate explicit execution task.
+- Treating single-asset mode as proof of isolated margin type.
 - Multi-symbol concurrent runtime.
 - Broker-grade audit reporting.
 - Advanced order types beyond the first constrained live slice.
@@ -93,4 +98,4 @@ This document is the top-level entrypoint for post-v1 live-trading work. It exis
 
 Future live implementation must proceed in small slices. The latest bounded manual MAINNET canary passed through the existing gates, but MAINNET auto-execution and broader mainnet operation remain out of scope until a separate design batch explicitly changes that boundary.
 
-The operator-DB MAINNET auto dry-run is evidence for planning only. It does not approve live auto execution.
+The operator-DB MAINNET auto dry-run and the 2026-04-25 no-order live trial are evidence for review only. They do not approve always-on or broader live auto execution.

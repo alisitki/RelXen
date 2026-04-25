@@ -247,6 +247,52 @@ impl FromStr for LiveEnvironment {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveMarginType {
+    Cross,
+    Isolated,
+    #[default]
+    Unknown,
+}
+
+impl LiveMarginType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cross => "cross",
+            Self::Isolated => "isolated",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_exchange_str(value: Option<&str>) -> Self {
+        match value.map(|value| value.trim().to_ascii_lowercase()) {
+            Some(value) if value == "cross" || value == "crossed" => Self::Cross,
+            Some(value) if value == "isolated" => Self::Isolated,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl Display for LiveMarginType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for LiveMarginType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cross" | "crossed" => Ok(Self::Cross),
+            "isolated" => Ok(Self::Isolated),
+            "unknown" => Ok(Self::Unknown),
+            _ => Err(format!("unsupported live margin type: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LiveCredentialId(pub String);
@@ -706,6 +752,8 @@ pub struct LivePositionSnapshot {
     pub mark_price: Option<f64>,
     pub unrealized_pnl: f64,
     pub leverage: Option<f64>,
+    #[serde(default)]
+    pub margin_type: LiveMarginType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1494,6 +1542,10 @@ pub struct MainnetAutoConfig {
     pub require_manual_canary_evidence: bool,
     pub evidence_required: bool,
     pub lesson_report_required: bool,
+    pub allowed_margin_type: MainnetAutoAllowedMarginType,
+    pub position_policy: AsoPositionPolicy,
+    pub aso_delta_threshold: String,
+    pub aso_zone_threshold: String,
 }
 
 impl Default for MainnetAutoConfig {
@@ -1511,11 +1563,154 @@ impl Default for MainnetAutoConfig {
             require_manual_canary_evidence: true,
             evidence_required: true,
             lesson_report_required: true,
+            allowed_margin_type: MainnetAutoAllowedMarginType::Isolated,
+            position_policy: AsoPositionPolicy::CrossoverOnly,
+            aso_delta_threshold: "5".to_string(),
+            aso_zone_threshold: "55".to_string(),
         }
     }
 }
 
 pub const MAINNET_AUTO_LIVE_CONFIRMATION_TEXT: &str = "START MAINNET AUTO LIVE BTCUSDT 15M";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoAllowedMarginType {
+    #[default]
+    Isolated,
+    Cross,
+    Any,
+}
+
+impl MainnetAutoAllowedMarginType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::Cross => "cross",
+            Self::Any => "any",
+        }
+    }
+
+    pub const fn allows(self, actual: LiveMarginType) -> bool {
+        match (self, actual) {
+            (_, LiveMarginType::Unknown) => false,
+            (Self::Any, LiveMarginType::Cross | LiveMarginType::Isolated) => true,
+            (Self::Isolated, LiveMarginType::Isolated) => true,
+            (Self::Cross, LiveMarginType::Cross) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for MainnetAutoAllowedMarginType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for MainnetAutoAllowedMarginType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "isolated" => Ok(Self::Isolated),
+            "cross" => Ok(Self::Cross),
+            "any" => Ok(Self::Any),
+            _ => Err(format!("unsupported mainnet auto margin policy: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AsoPositionPolicy {
+    #[default]
+    CrossoverOnly,
+    AlwaysInMarket,
+    FlatAllowed,
+}
+
+impl AsoPositionPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CrossoverOnly => "crossover_only",
+            Self::AlwaysInMarket => "always_in_market",
+            Self::FlatAllowed => "flat_allowed",
+        }
+    }
+}
+
+impl Display for AsoPositionPolicy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AsoPositionPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "crossover_only" | "crossover-only" => Ok(Self::CrossoverOnly),
+            "always_in_market" | "always-in-market" => Ok(Self::AlwaysInMarket),
+            "flat_allowed" | "flat-allowed" => Ok(Self::FlatAllowed),
+            _ => Err(format!("unsupported ASO position policy: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoDesiredSide {
+    Long,
+    Short,
+    #[default]
+    None,
+}
+
+impl MainnetAutoDesiredSide {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Long => "long",
+            Self::Short => "short",
+            Self::None => "none",
+        }
+    }
+
+    pub const fn from_signal_side(side: SignalSide) -> Self {
+        match side {
+            SignalSide::Buy => Self::Long,
+            SignalSide::Sell => Self::Short,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainnetAutoPolicyAction {
+    EnterLong,
+    EnterShort,
+    Hold,
+    Close,
+    Reverse,
+    #[default]
+    NoTrade,
+    Blocked,
+}
+
+impl MainnetAutoPolicyAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnterLong => "enter_long",
+            Self::EnterShort => "enter_short",
+            Self::Hold => "hold",
+            Self::Close => "close",
+            Self::Reverse => "reverse",
+            Self::NoTrade => "no_trade",
+            Self::Blocked => "blocked",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MainnetAutoLiveStartRequest {
@@ -1523,6 +1718,22 @@ pub struct MainnetAutoLiveStartRequest {
     pub duration_minutes: u64,
     pub order_type: LiveOrderType,
     pub confirmation_text: String,
+    #[serde(default)]
+    pub allowed_margin_type: MainnetAutoAllowedMarginType,
+    #[serde(default)]
+    pub position_policy: AsoPositionPolicy,
+    #[serde(default = "default_mainnet_auto_aso_delta_threshold")]
+    pub aso_delta_threshold: String,
+    #[serde(default = "default_mainnet_auto_aso_zone_threshold")]
+    pub aso_zone_threshold: String,
+}
+
+pub fn default_mainnet_auto_aso_delta_threshold() -> String {
+    "5".to_string()
+}
+
+pub fn default_mainnet_auto_aso_zone_threshold() -> String {
+    "55".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1605,12 +1816,97 @@ impl Default for MainnetAutoWatchdogStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct MainnetAutoMarginPolicyStatus {
+    pub allowed_margin_type: MainnetAutoAllowedMarginType,
+    pub actual_margin_type: LiveMarginType,
+    pub allowed: bool,
+    pub blocker: Option<String>,
+    pub warning: Option<String>,
+}
+
+impl MainnetAutoMarginPolicyStatus {
+    pub fn evaluate(
+        allowed_margin_type: MainnetAutoAllowedMarginType,
+        actual_margin_type: LiveMarginType,
+    ) -> Self {
+        let allowed = allowed_margin_type.allows(actual_margin_type);
+        let blocker = if actual_margin_type == LiveMarginType::Unknown {
+            Some("margin_type_unknown".to_string())
+        } else if !allowed {
+            Some("margin_type_not_allowed".to_string())
+        } else {
+            None
+        };
+        let warning = if allowed && allowed_margin_type == MainnetAutoAllowedMarginType::Any {
+            Some("margin_type_any_allowed".to_string())
+        } else {
+            None
+        };
+        Self {
+            allowed_margin_type,
+            actual_margin_type,
+            allowed,
+            blocker,
+            warning,
+        }
+    }
+}
+
+impl Default for MainnetAutoMarginPolicyStatus {
+    fn default() -> Self {
+        Self::evaluate(
+            MainnetAutoAllowedMarginType::Isolated,
+            LiveMarginType::Unknown,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MainnetAutoPositionPolicyStatus {
+    pub policy: AsoPositionPolicy,
+    pub aso_delta_threshold: String,
+    pub aso_zone_threshold: String,
+    pub last_bulls: Option<f64>,
+    pub last_bears: Option<f64>,
+    pub last_delta: Option<f64>,
+    pub last_zone: Option<f64>,
+    pub desired_side: MainnetAutoDesiredSide,
+    pub current_side: MainnetAutoDesiredSide,
+    pub last_action: MainnetAutoPolicyAction,
+    pub last_blocker: Option<String>,
+    pub last_reason: Option<String>,
+}
+
+impl Default for MainnetAutoPositionPolicyStatus {
+    fn default() -> Self {
+        Self {
+            policy: AsoPositionPolicy::CrossoverOnly,
+            aso_delta_threshold: default_mainnet_auto_aso_delta_threshold(),
+            aso_zone_threshold: default_mainnet_auto_aso_zone_threshold(),
+            last_bulls: None,
+            last_bears: None,
+            last_delta: None,
+            last_zone: None,
+            desired_side: MainnetAutoDesiredSide::None,
+            current_side: MainnetAutoDesiredSide::None,
+            last_action: MainnetAutoPolicyAction::NoTrade,
+            last_blocker: None,
+            last_reason: Some("not_evaluated".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MainnetAutoStatus {
     pub state: MainnetAutoState,
     pub mode: MainnetAutoRunMode,
     pub config: MainnetAutoConfig,
     pub risk_budget: MainnetAutoRiskBudget,
     pub watchdog: MainnetAutoWatchdogStatus,
+    pub margin_policy: MainnetAutoMarginPolicyStatus,
+    pub position_policy: MainnetAutoPositionPolicyStatus,
     pub session_id: Option<String>,
     pub started_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -1640,6 +1936,8 @@ impl Default for MainnetAutoStatus {
             config,
             risk_budget: MainnetAutoRiskBudget::default(),
             watchdog: MainnetAutoWatchdogStatus::default(),
+            margin_policy: MainnetAutoMarginPolicyStatus::default(),
+            position_policy: MainnetAutoPositionPolicyStatus::default(),
             session_id: None,
             started_at: None,
             expires_at: None,
@@ -1682,6 +1980,24 @@ pub struct MainnetAutoDecisionEvent {
     pub intent_hash: Option<String>,
     pub would_submit: bool,
     pub blocking_reasons: Vec<String>,
+    #[serde(default)]
+    pub policy_mode: Option<AsoPositionPolicy>,
+    #[serde(default)]
+    pub aso_bulls: Option<f64>,
+    #[serde(default)]
+    pub aso_bears: Option<f64>,
+    #[serde(default)]
+    pub aso_delta: Option<f64>,
+    #[serde(default)]
+    pub aso_zone: Option<f64>,
+    #[serde(default)]
+    pub desired_side: Option<MainnetAutoDesiredSide>,
+    #[serde(default)]
+    pub current_position_side: Option<MainnetAutoDesiredSide>,
+    #[serde(default)]
+    pub policy_action: Option<MainnetAutoPolicyAction>,
+    #[serde(default)]
+    pub policy_reason: Option<String>,
     pub message: String,
     pub created_at: i64,
 }
@@ -1701,7 +2017,21 @@ pub struct MainnetAutoLessonReport {
     pub session_id: String,
     pub mode: MainnetAutoRunMode,
     pub live_order_submitted: bool,
+    #[serde(default)]
+    pub position_policy: AsoPositionPolicy,
     pub signals_observed: u64,
+    #[serde(default)]
+    pub desired_side_evaluations: u64,
+    #[serde(default)]
+    pub enter_decisions: u64,
+    #[serde(default)]
+    pub hold_decisions: u64,
+    #[serde(default)]
+    pub reverse_decisions: u64,
+    #[serde(default)]
+    pub no_trade_decisions: u64,
+    #[serde(default)]
+    pub margin_type_block_count: u64,
     pub decisions_blocked: u64,
     pub would_submit_decisions: u64,
     pub duplicate_suppression_count: u64,

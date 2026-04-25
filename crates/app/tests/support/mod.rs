@@ -23,12 +23,12 @@ use relxen_domain::{
     LiveAssetBalance, LiveAutoExecutorStatus, LiveCredentialId, LiveCredentialMetadata,
     LiveCredentialSecret, LiveCredentialValidationResult, LiveCredentialValidationStatus,
     LiveEnvironment, LiveExecutionSnapshot, LiveFillRecord, LiveIntentLock, LiveKillSwitchState,
-    LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus, LiveOrderType,
-    LiveReconciliationStatus, LiveReferencePriceSnapshot, LiveRiskProfile, LiveStateRecord,
-    LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent, LogEvent,
-    MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget, MainnetAutoStatus,
-    MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol, SystemMetrics, Timeframe,
-    Trade, Wallet,
+    LiveMarginType, LiveOrderPreflightResult, LiveOrderRecord, LiveOrderSide, LiveOrderStatus,
+    LiveOrderType, LivePositionSnapshot, LiveReconciliationStatus, LiveReferencePriceSnapshot,
+    LiveRiskProfile, LiveStateRecord, LiveSymbolFilterSummary, LiveSymbolRules, LiveUserDataEvent,
+    LogEvent, MainnetAutoDecisionEvent, MainnetAutoLessonReport, MainnetAutoRiskBudget,
+    MainnetAutoStatus, MainnetAutoWatchdogEvent, Position, Settings, SignalEvent, Symbol,
+    SystemMetrics, Timeframe, Trade, Wallet,
 };
 
 pub fn candle(index: i64) -> Candle {
@@ -609,6 +609,8 @@ pub struct FakeLiveExchange {
     pub user_trades: Mutex<Vec<LiveFillRecord>>,
     pub preflight_accept: bool,
     pub submitted_orders: Mutex<Vec<LiveOrderRecord>>,
+    pub auto_fill_market_orders: bool,
+    pub simulated_position_amt: Mutex<Option<f64>>,
     pub fail_submit: bool,
     pub fail_cancel: bool,
     pub listen_key_creates: AtomicUsize,
@@ -688,6 +690,8 @@ impl Default for FakeLiveExchange {
             user_trades: Mutex::new(Vec::new()),
             preflight_accept: true,
             submitted_orders: Mutex::new(Vec::new()),
+            auto_fill_market_orders: false,
+            simulated_position_amt: Mutex::new(None),
             fail_submit: false,
             fail_cancel: false,
             listen_key_creates: AtomicUsize::new(0),
@@ -723,10 +727,20 @@ impl LiveExchangePort for FakeLiveExchange {
         environment: LiveEnvironment,
         _secret: &LiveCredentialSecret,
     ) -> AppResult<LiveAccountSnapshot> {
+        let simulated_position_amt = *self.simulated_position_amt.lock().await;
         self.account
             .clone()
             .map(|mut account| {
                 account.environment = environment;
+                if let Some(amount) = simulated_position_amt {
+                    if let Some(position) = account
+                        .positions
+                        .iter_mut()
+                        .find(|position| position.symbol == Symbol::BtcUsdt)
+                    {
+                        position.position_amt = amount;
+                    }
+                }
                 account
             })
             .ok_or_else(|| AppError::Exchange("account snapshot unavailable".to_string()))
@@ -871,10 +885,65 @@ impl LiveExchangePort for FakeLiveExchange {
         } else {
             LiveOrderType::Market
         };
+        let reduce_only = payload
+            .get("reduceOnly")
+            .map(|value| value == "true")
+            .unwrap_or(false);
         let client_order_id = payload
             .get("newClientOrderId")
             .cloned()
             .unwrap_or_else(|| "fake-client-order".to_string());
+        let mut status = LiveOrderStatus::Working;
+        let mut executed_qty = "0".to_string();
+        let mut avg_price = None;
+        if self.auto_fill_market_orders && order_type == LiveOrderType::Market {
+            let quantity = payload
+                .get("quantity")
+                .and_then(|value| value.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let current = {
+                let simulated = self.simulated_position_amt.lock().await;
+                (*simulated).unwrap_or_else(|| {
+                    self.account
+                        .as_ref()
+                        .and_then(|account| {
+                            account
+                                .positions
+                                .iter()
+                                .find(|position| position.symbol == symbol)
+                                .map(|position| position.position_amt)
+                        })
+                        .unwrap_or_default()
+                })
+            };
+            let mut next = current;
+            if reduce_only {
+                next = match (current.is_sign_positive(), side) {
+                    (true, LiveOrderSide::Sell) => (current - quantity).max(0.0),
+                    (false, LiveOrderSide::Buy) => (current + quantity).min(0.0),
+                    _ => current,
+                };
+            } else if side == LiveOrderSide::Buy {
+                next += quantity;
+            } else {
+                next -= quantity;
+            }
+            if next.abs() <= f64::EPSILON {
+                next = 0.0;
+            }
+            *self.simulated_position_amt.lock().await = Some(next);
+            status = LiveOrderStatus::Filled;
+            executed_qty = payload
+                .get("quantity")
+                .cloned()
+                .unwrap_or_else(|| "0.001".to_string());
+            avg_price = self
+                .reference_price
+                .lock()
+                .ok()
+                .and_then(|reference| reference.as_ref().and_then(|price| price.price.clone()))
+                .or_else(|| Some("2000".to_string()));
+        }
         let order = LiveOrderRecord {
             id: client_order_id.clone(),
             credential_id: None,
@@ -882,7 +951,7 @@ impl LiveExchangePort for FakeLiveExchange {
             symbol,
             side,
             order_type,
-            status: LiveOrderStatus::Working,
+            status,
             client_order_id,
             exchange_order_id: Some("42".to_string()),
             quantity: payload
@@ -890,12 +959,9 @@ impl LiveExchangePort for FakeLiveExchange {
                 .cloned()
                 .unwrap_or_else(|| "0.001".to_string()),
             price: payload.get("price").cloned(),
-            executed_qty: "0".to_string(),
-            avg_price: None,
-            reduce_only: payload
-                .get("reduceOnly")
-                .map(|value| value == "true")
-                .unwrap_or(false),
+            executed_qty,
+            avg_price,
+            reduce_only,
             time_in_force: payload.get("timeInForce").cloned(),
             intent_id: None,
             intent_hash: None,
@@ -1041,7 +1107,16 @@ pub fn fake_account_snapshot(environment: LiveEnvironment) -> LiveAccountSnapsho
             available_balance: 900.0,
             unrealized_pnl: 0.0,
         }],
-        positions: Vec::new(),
+        positions: vec![LivePositionSnapshot {
+            symbol: Symbol::BtcUsdt,
+            position_side: "BOTH".to_string(),
+            position_amt: 0.0,
+            entry_price: 0.0,
+            mark_price: None,
+            unrealized_pnl: 0.0,
+            leverage: Some(5.0),
+            margin_type: LiveMarginType::Isolated,
+        }],
         fetched_at: relxen_app::now_ms(),
     }
 }

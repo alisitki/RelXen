@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use relxen_app::{EnvCredentialConfig, EnvCredentialPair};
-use relxen_domain::{MainnetAutoConfig, MainnetAutoRunMode};
+use relxen_domain::{
+    AsoPositionPolicy, MainnetAutoAllowedMarginType, MainnetAutoConfig, MainnetAutoRunMode,
+};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -86,6 +88,18 @@ fn load_mainnet_auto_config() -> MainnetAutoConfig {
         ),
         evidence_required: env_bool("RELXEN_MAINNET_AUTO_EVIDENCE_REQUIRED", true),
         lesson_report_required: env_bool("RELXEN_MAINNET_AUTO_LESSON_REPORT_REQUIRED", true),
+        allowed_margin_type: env::var("RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE")
+            .ok()
+            .and_then(|value| value.parse::<MainnetAutoAllowedMarginType>().ok())
+            .unwrap_or_default(),
+        position_policy: env::var("RELXEN_MAINNET_AUTO_POSITION_POLICY")
+            .ok()
+            .and_then(|value| value.parse::<AsoPositionPolicy>().ok())
+            .unwrap_or_default(),
+        aso_delta_threshold: env::var("RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD")
+            .unwrap_or_else(|_| "5".to_string()),
+        aso_zone_threshold: env::var("RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD")
+            .unwrap_or_else(|_| "55".to_string()),
     }
 }
 

@@ -20,7 +20,9 @@ Live execution must be operator-gated and fail closed. In the current repository
 - A second-canary readiness dry-run exists under `artifacts/mainnet-canary/20260424T121504Z-second-canary-dry-run/`; it did not submit an order and kept the mainnet canary server flag disabled.
 - A second bounded MAINNET canary execution exists under `artifacts/mainnet-canary/20260424T122751Z-second-canary-execution/`; it submitted one order, canceled it, left no fill/position, and disabled the canary flag afterward. Its cancel payload ergonomics issue has been fixed and regression-tested without submitting another order.
 - Mainnet-canary closure is an operator handoff, not broader enablement. MAINNET canary remains session-only, MAINNET auto remains blocked, and any further canary must repeat fresh dry-run gates first.
-- MAINNET auto infrastructure has its own persisted risk budget and remains live-blocked by default. Dry-run may evaluate a would-submit decision, but it must not call the exchange order endpoint. Mainnet Auto Live Support v1 adds a future `BTCUSDT` 15-minute `MARKET` session path with exact session confirmation, emergency order/fill caps of 20, notional cap 80, max realized loss 5 USDT, one in-flight order, one open position maximum, watchdog runtime stop, evidence logging, and lesson reporting. It was tested with mocked adapters only and was not run live.
+- MAINNET auto infrastructure has its own persisted risk budget and remains live-blocked by default. Dry-run may evaluate a would-submit decision, but it must not call the exchange order endpoint. Mainnet Auto Live Support v1 adds a `BTCUSDT` 15-minute `MARKET` session path with exact session confirmation, emergency order/fill caps of 20, notional cap 80, max realized loss 5 USDT, max leverage capped at 100, one in-flight order, one open position maximum, watchdog runtime stop, evidence logging, and lesson reporting. The first explicit 2026-04-25 live run stopped by watchdog at max runtime with zero signals, zero orders, zero fills, and flat final state.
+- MAINNET auto now gates actual symbol margin type separately from single-asset/multi-assets mode. `RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE` defaults to `isolated`; actual `cross` blocks unless explicitly allowed as `cross` or `any`; `unknown` blocks live MAINNET auto.
+- MAINNET auto ASO policy defaults to `crossover_only`. `always_in_market` is more active/riskier because it uses the latest closed-candle ASO state to seek LONG/SHORT without waiting for a crossover. `flat_allowed` filters weak ASO states with delta/zone thresholds and holds existing positions by default when state is weak. `always_in_market` reversal is allowed only through reduce-only close, flat reconciliation, and then the opposite entry; unresolved order or ambiguous position state blocks the entry.
 - The operator-DB dry-run used risk budget `mainnet-auto-operator-dry-run-v1`: `BTCUSDT`, `LIMIT` only, max leverage `5`, one order/fill max, `80` max notional/order/session/open, flat start/stop, fresh shadow/reference, evidence logging, and lesson report required. This is a dry-run profile only and is not approval for live auto.
 
 ## Runtime Guards
@@ -61,7 +63,10 @@ Live runtime may start only when all are true:
 - MAINNET canary preview is `LIMIT`, non-marketable after rounding, and based on a fresh reference price.
 - MAINNET canary review has the current TESTNET soak evidence bundle and updated checklist.
 - MAINNET auto live mode has `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, an operator arm/start command, a valid risk budget, and evidence/lesson output initialized. These gates are for a future explicit batch; current default is dry-run/live-blocked.
-- The future live auto start confirmation must exactly be `START MAINNET AUTO LIVE BTCUSDT 15M`; no per-order confirmation is used after the session is started.
+- MAINNET auto margin type is known and allowed by the session policy; single-asset mode does not imply isolated margin type.
+- MAINNET auto policy mode and ASO thresholds are explicit in server config and start command flags.
+- MAINNET auto configured leverage must be greater than zero and no higher than `100`; active-symbol exchange leverage must not exceed the configured session budget.
+- Any live auto start confirmation must exactly be `START MAINNET AUTO LIVE BTCUSDT 15M`; no per-order confirmation is used after the session is started.
 
 ## Stop Conditions
 

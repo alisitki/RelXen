@@ -12,11 +12,15 @@ The first MAINNET canary submitted one `BTCUSDT SELL LIMIT 0.001 @ 77950`, cance
 
 The second canary exposed a cancel payload ergonomics issue. That issue is fixed: `POST /api/live/orders/:order_ref/cancel` now uses the path `order_ref` as authoritative, does not require body `order_ref`, accepts a matching optional body `order_ref`, and rejects a mismatch.
 
-The dashboard RC UI has also been cleaned for review: the top safety strip makes `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED`, kill-switch state, active symbol, current state, and position state visible without opening advanced details. MAINNET auto dry-run infrastructure now exists for status, decisions, evidence, and lessons, but live MAINNET auto remains disabled by default.
+The dashboard RC UI has also been cleaned for review: the top safety strip makes `MAINNET AUTO: BLOCKED`, `MAINNET CANARY: DISABLED`, kill-switch state, active symbol, current state, and position state visible without opening advanced details. MAINNET auto dry-run infrastructure now exists for status, decisions, evidence, and lessons, and one explicit live-auto trial has been completed with no orders/fills. Live MAINNET auto remains disabled by default.
 
-Mainnet Auto Live Support v1 is implemented for a future explicitly approved 15-minute `BTCUSDT` session, but no real live-auto session has been run. The future start path is server-config-gated, session-confirmed, watchdog-protected, and evidence-logged; it remains blocked unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M` are supplied for that session.
+Mainnet Auto Live Support v1 is implemented for explicitly approved 15-minute `BTCUSDT` sessions. The first run on 2026-04-25 used session-scoped live-auto config, stopped by watchdog at `max_runtime_reached`, submitted zero orders, recorded zero fills, and ended flat. The start path is server-config-gated, session-confirmed, watchdog-protected, and evidence-logged; it remains blocked unless `RELXEN_ENABLE_MAINNET_AUTO_EXECUTION=true`, `RELXEN_MAINNET_AUTO_MODE=live`, and exact confirmation `START MAINNET AUTO LIVE BTCUSDT 15M` are supplied for that session.
 
-Operator-start preparation is in place for the 15-minute live trial. `scripts/run_mainnet_auto_live_trial.sh` accepts the explicit batch flags (`--max-leverage 5`, `--max-notional 80`, `--max-session-loss-usdt 5`, `--order-type MARKET`, and `--confirm ...`), verifies the running server is already in live-auto mode, configures the bounded risk budget, and then calls the existing live-start endpoint. It does not alter strategy logic or widen symbol/order scope.
+Operator-start preparation is in place for the 15-minute live trial. `scripts/run_mainnet_auto_live_trial.sh` accepts the explicit batch flags (`--max-leverage` up to `100`, `--max-notional 80`, `--max-session-loss-usdt 5`, `--order-type MARKET`, and `--confirm ...`), verifies the running server is already in live-auto mode, configures the bounded risk budget, and then calls the existing live-start endpoint. It does not alter strategy logic or widen symbol/order scope.
+
+Mainnet Auto Policy Support v1 adds required policy flags before any repeat live trial: `--allowed-margin-type isolated|cross|any`, `--position-policy crossover_only|always_in_market|flat_allowed`, and optional ASO delta/zone thresholds. Default remains `isolated` plus `crossover_only`. If the Binance UI shows BTCUSDT as Cross, a repeat live task must explicitly choose `--allowed-margin-type cross`; otherwise the server blocks with `margin_type_not_allowed`. Unknown margin type blocks live auto.
+
+After the degraded `always_in_market` run, MAINNET auto now has mocked-adapter support for coherent reverse and flat-stop: reduce-only close first, confirmed flat state second, opposite entry only after reconciliation. `crossover_only` keeps the conservative open-position blocker. This was an implementation batch only; no live order was submitted while adding it.
 
 ## What Is Safe To Run
 
@@ -55,8 +59,8 @@ TESTNET execution remains available only through explicit operator confirmation 
 
 ## What Is Not Enabled
 
-- MAINNET auto live execution must remain blocked unless a later explicit live-auto task enables it. Current safe use is dry-run only.
-- The implemented live-auto start path is not an approval to run; use `docs/MAINNET_AUTO_LIVE_TRIAL_PLAN.md` for the future execution checklist.
+- MAINNET auto live execution must remain blocked unless a later explicit live-auto task enables it. Current safe use is dry-run/status/evidence review only.
+- The implemented live-auto start path, policy-support batch, and completed no-order trial are not approval to run again; use `docs/MAINNET_AUTO_LIVE_TRIAL_PLAN.md` for any repeat execution checklist.
 - Broad MAINNET operation is not enabled.
 - Conditional/algo orders are not supported.
 - Symbol scope is still `BTCUSDT` / `BTCUSDC`.
@@ -81,7 +85,9 @@ Expected dry-run truth:
 - exported `orders.json` and `fills.json` are empty
 - `lessons.md` / `lessons.json` are analysis only and do not change settings
 
-Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected/validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded `dry_run_would_submit`, verified live start remained config-blocked, and submitted no order. Treat this as readiness evidence for a future plan only, not live-auto approval.
+Latest operator-DB dry-run: `artifacts/mainnet-auto/20260424T142250Z-operator-db-dry-run/`. It selected/validated `env-mainnet`, refreshed mainnet readiness/shadow, recorded `dry_run_would_submit`, verified live start remained config-blocked, and submitted no order. Treat this as readiness evidence only, not live-auto approval.
+
+Latest live-auto evidence: `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`. It records session `mnauto_live_39b61e12f8084f669b334420a3f105ac`, `BTCUSDT`, `MARKET`, 15-minute session config, watchdog stop `max_runtime_reached`, zero signals, zero decisions, zero submitted orders, zero fills, realized PnL/fees `0`, final open MAINNET BTCUSDT orders `0`, final position flat, and generated lessons. Treat this as no-order live-path evidence, not repeat-run approval.
 
 ## Safe Startup Checklist
 
@@ -177,6 +183,12 @@ Second MAINNET canary:
 - Final: canceled, `executed_qty=0.000`, no fill, no position, restart repair passed.
 - Historical note: first cancel attempt failed because the old route body expected duplicated `order_ref`; retry succeeded. Code was later fixed.
 
+First MAINNET auto live trial:
+
+- Path: `artifacts/mainnet-auto/1777099647957-mnauto_live_39b61e12f8084f669b334420a3f105ac/`
+- Session: `mnauto_live_39b61e12f8084f669b334420a3f105ac`
+- Final: watchdog stopped at `max_runtime_reached`, no order submitted, no fill, final BTCUSDT position flat, no open MAINNET BTCUSDT order, lessons generated.
+
 ## Running Another Canary
 
 Do not run another canary by default. A previous successful canary does not authorize a new order.
@@ -198,7 +210,7 @@ Another canary requires a separate explicit operator request and a fresh dry-run
 
 ## Must Never Be Done Accidentally
 
-- Do not enable MAINNET auto-execution.
+- Do not enable MAINNET auto-execution outside an explicit bounded session.
 - Do not bypass server-side canary gates.
 - Do not use `MARKET` for a MAINNET canary.
 - Do not submit conditional/algo orders.

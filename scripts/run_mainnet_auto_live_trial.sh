@@ -12,16 +12,24 @@ MAX_NOTIONAL="${RELXEN_MAINNET_AUTO_MAX_NOTIONAL:-80}"
 MAX_SESSION_LOSS_USDT="${RELXEN_MAINNET_AUTO_MAX_DAILY_LOSS:-5}"
 MAX_ORDERS="${RELXEN_MAINNET_AUTO_MAX_ORDERS:-20}"
 MAX_FILLS="${RELXEN_MAINNET_AUTO_MAX_FILLS:-20}"
+ALLOWED_MARGIN_TYPE="${RELXEN_MAINNET_AUTO_ALLOWED_MARGIN_TYPE:-isolated}"
+POSITION_POLICY="${RELXEN_MAINNET_AUTO_POSITION_POLICY:-crossover_only}"
+ASO_DELTA_THRESHOLD="${RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD:-5}"
+ASO_ZONE_THRESHOLD="${RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD:-55}"
 
 usage() {
   cat >&2 <<'USAGE'
 usage: run_mainnet_auto_live_trial.sh \
   --symbol BTCUSDT \
   --duration-minutes 15 \
-  --max-leverage 5 \
+  --max-leverage 100 \
   --max-notional 80 \
   --max-session-loss-usdt 5 \
   --order-type MARKET \
+  --allowed-margin-type isolated \
+  --position-policy crossover_only \
+  --aso-delta-threshold 5 \
+  --aso-zone-threshold 55 \
   --confirm "START MAINNET AUTO LIVE BTCUSDT 15M"
 USAGE
 }
@@ -76,6 +84,26 @@ while [[ $# -gt 0 ]]; do
       MAX_FILLS="${2:-}"
       shift 2
       ;;
+    --allowed-margin-type)
+      need_value "$@"
+      ALLOWED_MARGIN_TYPE="${2:-}"
+      shift 2
+      ;;
+    --position-policy)
+      need_value "$@"
+      POSITION_POLICY="${2:-}"
+      shift 2
+      ;;
+    --aso-delta-threshold)
+      need_value "$@"
+      ASO_DELTA_THRESHOLD="${2:-}"
+      shift 2
+      ;;
+    --aso-zone-threshold)
+      need_value "$@"
+      ASO_ZONE_THRESHOLD="${2:-}"
+      shift 2
+      ;;
     --confirm|--confirmation)
       need_value "$@"
       CONFIRMATION="${2:-}"
@@ -113,10 +141,31 @@ if [[ "$SYMBOL" != "BTCUSDT" || "$DURATION_MINUTES" != "15" || "$ORDER_TYPE" != 
   exit 2
 fi
 
-if [[ "$MAX_LEVERAGE" != "5" || "$MAX_NOTIONAL" != "80" || "$MAX_SESSION_LOSS_USDT" != "5" || "$MAX_ORDERS" != "20" || "$MAX_FILLS" != "20" ]]; then
-  echo "Refusing to start live trial: v1 operator batch requires leverage=5, notional=80, loss=5, max-orders=20, max-fills=20." >&2
+if [[ ! "$MAX_LEVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !($MAX_LEVERAGE > 0 && $MAX_LEVERAGE <= 100) }"; then
+  echo "Refusing to start live trial: --max-leverage must be greater than 0 and no more than 100." >&2
   exit 2
 fi
+
+if [[ "$MAX_NOTIONAL" != "80" || "$MAX_SESSION_LOSS_USDT" != "5" || "$MAX_ORDERS" != "20" || "$MAX_FILLS" != "20" ]]; then
+  echo "Refusing to start live trial: v1 operator batch requires notional=80, loss=5, max-orders=20, max-fills=20." >&2
+  exit 2
+fi
+
+case "$ALLOWED_MARGIN_TYPE" in
+  isolated|cross|any) ;;
+  *)
+    echo "Refusing to start live trial: --allowed-margin-type must be isolated, cross, or any." >&2
+    exit 2
+    ;;
+esac
+
+case "$POSITION_POLICY" in
+  crossover_only|always_in_market|flat_allowed) ;;
+  *)
+    echo "Refusing to start live trial: --position-policy must be crossover_only, always_in_market, or flat_allowed." >&2
+    exit 2
+    ;;
+esac
 
 if [[ "$CONFIRMATION" != "$REQUIRED_CONFIRMATION" ]]; then
   echo "Refusing to start live trial. Required confirmation:" >&2
@@ -128,10 +177,21 @@ fi
 auto_status="$(curl -fsS "$BASE_URL/api/live/mainnet-auto/status")"
 server_live_enabled="$(jq -r '.config.enable_live_execution // false' <<<"$auto_status")"
 server_mode="$(jq -r '.mode // "unknown"' <<<"$auto_status")"
+server_allowed_margin_type="$(jq -r '.config.allowed_margin_type // "isolated"' <<<"$auto_status")"
+server_position_policy="$(jq -r '.config.position_policy // "crossover_only"' <<<"$auto_status")"
+server_aso_delta_threshold="$(jq -r '.config.aso_delta_threshold // "5"' <<<"$auto_status")"
+server_aso_zone_threshold="$(jq -r '.config.aso_zone_threshold // "55"' <<<"$auto_status")"
 
 if [[ "$server_live_enabled" != "true" || "$server_mode" != "live" ]]; then
   echo "Refusing to start live trial: running server is not in session-scoped live-auto mode." >&2
   echo "Server config enable_live_execution=$server_live_enabled mode=$server_mode" >&2
+  exit 2
+fi
+
+if [[ "$server_allowed_margin_type" != "$ALLOWED_MARGIN_TYPE" || "$server_position_policy" != "$POSITION_POLICY" || "$server_aso_delta_threshold" != "$ASO_DELTA_THRESHOLD" || "$server_aso_zone_threshold" != "$ASO_ZONE_THRESHOLD" ]]; then
+  echo "Refusing to start live trial: script policy flags must match the running server config." >&2
+  echo "Server allowed_margin_type=$server_allowed_margin_type position_policy=$server_position_policy aso_delta_threshold=$server_aso_delta_threshold aso_zone_threshold=$server_aso_zone_threshold" >&2
+  echo "Script allowed_margin_type=$ALLOWED_MARGIN_TYPE position_policy=$POSITION_POLICY aso_delta_threshold=$ASO_DELTA_THRESHOLD aso_zone_threshold=$ASO_ZONE_THRESHOLD" >&2
   exit 2
 fi
 
@@ -171,7 +231,7 @@ curl -fsS -X PUT "$BASE_URL/api/live/mainnet-auto/risk-budget" \
       require_lessons_report: true,
       updated_at: 0
     }')" \
-  | jq '{budget_id, allowed_symbols, allowed_order_types, max_runtime_minutes, max_orders_per_session, max_fills_per_session, max_notional_per_order, max_daily_realized_loss}'
+  | jq '{budget_id, allowed_symbols, allowed_order_types, max_runtime_minutes, max_orders_per_session, max_fills_per_session, max_notional_per_order, max_daily_realized_loss, max_leverage}'
 
 echo "Starting bounded MAINNET auto live session. No per-order confirmation is used after this session-level confirmation."
 curl -fsS -X POST "$BASE_URL/api/live/mainnet-auto/start" \
@@ -180,6 +240,10 @@ curl -fsS -X POST "$BASE_URL/api/live/mainnet-auto/start" \
     --arg symbol "$SYMBOL" \
     --arg order_type "$ORDER_TYPE" \
     --arg confirmation_text "$CONFIRMATION" \
+    --arg allowed_margin_type "$ALLOWED_MARGIN_TYPE" \
+    --arg position_policy "$POSITION_POLICY" \
+    --arg aso_delta_threshold "$ASO_DELTA_THRESHOLD" \
+    --arg aso_zone_threshold "$ASO_ZONE_THRESHOLD" \
     --argjson duration_minutes "$DURATION_MINUTES" \
-    '{symbol: $symbol, duration_minutes: $duration_minutes, order_type: $order_type, confirmation_text: $confirmation_text}')" \
-  | jq '{state, mode, session_id, started_at, expires_at, current_blockers, live_orders_submitted, evidence_path}'
+    '{symbol: $symbol, duration_minutes: $duration_minutes, order_type: $order_type, confirmation_text: $confirmation_text, allowed_margin_type: $allowed_margin_type, position_policy: $position_policy, aso_delta_threshold: $aso_delta_threshold, aso_zone_threshold: $aso_zone_threshold}')" \
+  | jq '{state, mode, session_id, started_at, expires_at, margin_policy, position_policy, current_blockers, live_orders_submitted, evidence_path}'
