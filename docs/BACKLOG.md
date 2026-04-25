@@ -97,6 +97,7 @@
 - Mainnet Auto Live Support v1 implemented the gated future live path without running it: typed `BTCUSDT` / 15-minute / `MARKET` start request, exact session confirmation, server config gates, live-running session state, closed-candle ASO signal handling through mocked adapter tests, one-position/one-in-flight enforcement, runtime watchdog, live evidence/lesson support, and headless live-trial/status scripts.
 - Mainnet Auto Live Support verification gate rerun completed without starting a real MAINNET auto session, submitting TESTNET/MAINNET orders, or calling real cancel/flatten. Mocked live-ASO tests now prove existing MAINNET shadow open-position and open-order state produces separate `open_position` / `open_order` blockers before any submit attempt.
 - Operator-start command preparation completed for the 15-minute live trial: the live helper now accepts the explicit batch flags, checks the running server is already in session-scoped live-auto mode, configures the bounded risk budget, and calls the existing start endpoint. No live session was started and no order was submitted during this prep.
+- Mainnet-auto persisted-state startup compatibility fixed: legacy operator DB `mainnet_auto_state` singleton JSON without the newer `watchdog` field now decodes with defaults, and a session-scoped live-auto server smoke reached `/api/health` without starting the auto session.
 
 ## Immediate Next Task
 

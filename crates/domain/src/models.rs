@@ -1480,6 +1480,7 @@ pub struct LiveAutoExecutorRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MainnetAutoConfig {
     pub enable_live_execution: bool,
     pub mode: MainnetAutoRunMode,
@@ -1525,6 +1526,7 @@ pub struct MainnetAutoLiveStartRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MainnetAutoRiskBudget {
     pub configured: bool,
     pub budget_id: String,
@@ -1582,6 +1584,7 @@ impl Default for MainnetAutoRiskBudget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MainnetAutoWatchdogStatus {
     pub running: bool,
     pub last_check_at: Option<i64>,
@@ -1601,6 +1604,7 @@ impl Default for MainnetAutoWatchdogStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MainnetAutoStatus {
     pub state: MainnetAutoState,
     pub mode: MainnetAutoRunMode,
@@ -2096,5 +2100,81 @@ impl Default for Settings {
             live_mode_visible: true,
             auto_restart_on_apply: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mainnet_auto_status_decodes_pre_watchdog_singleton_json() {
+        let json = r#"{
+            "state": "disabled",
+            "mode": "dry_run",
+            "config": {
+                "enable_live_execution": false,
+                "mode": "dry_run",
+                "max_runtime_minutes": 15,
+                "max_orders": 20,
+                "max_fills": 20,
+                "max_notional": "80",
+                "max_daily_loss": "5",
+                "require_flat_start": true,
+                "require_flat_stop": true,
+                "evidence_required": true,
+                "lesson_report_required": true
+            },
+            "risk_budget": {
+                "configured": true,
+                "budget_id": "mainnet-auto-legacy",
+                "max_notional_per_order": "80",
+                "max_total_session_notional": "80",
+                "max_open_notional": "80",
+                "max_orders_per_session": 20,
+                "max_fills_per_session": 20,
+                "max_consecutive_losses": 1,
+                "max_consecutive_rejections": 1,
+                "max_daily_realized_loss": "5",
+                "max_position_age_seconds": 900,
+                "max_runtime_minutes": 15,
+                "max_leverage": "5",
+                "require_flat_start": true,
+                "require_flat_stop": true,
+                "allowed_symbols": ["BTCUSDT"],
+                "allowed_order_types": ["MARKET"],
+                "require_fresh_reference_price": true,
+                "require_fresh_shadow": true,
+                "require_fresh_user_data_stream": true,
+                "require_evidence_logging": true,
+                "require_lessons_report": true,
+                "updated_at": 1
+            },
+            "session_id": null,
+            "started_at": null,
+            "expires_at": null,
+            "stopped_at": null,
+            "last_heartbeat_at": null,
+            "last_signal_id": null,
+            "last_signal_open_time": null,
+            "last_order_id": null,
+            "last_decision_id": null,
+            "last_decision_outcome": null,
+            "blocking_reasons": ["mainnet_auto_config_disabled"],
+            "current_blockers": ["mainnet_auto_config_disabled"],
+            "latest_lessons_recommendation": "live_not_allowed",
+            "live_orders_submitted": 0,
+            "dry_run_orders_submitted": 0,
+            "evidence_path": null,
+            "updated_at": 1
+        }"#;
+
+        let status: MainnetAutoStatus =
+            serde_json::from_str(json).expect("legacy mainnet auto status decodes");
+
+        assert_eq!(status.state, MainnetAutoState::Disabled);
+        assert!(status.config.require_manual_canary_evidence);
+        assert_eq!(status.watchdog, MainnetAutoWatchdogStatus::default());
+        assert_eq!(status.last_watchdog_stop_reason, None);
     }
 }
