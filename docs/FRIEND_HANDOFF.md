@@ -131,6 +131,66 @@ Teknoloji yapısı:
 - Reverse/flat-stop path reduce-only close ve flat reconciliation kullanır.
 - Watchdog max runtime, market-data stale, shadow stale, kill switch, max orders/fills/loss gibi nedenlerle stop/flat-stop yapabilir.
 
+### 3.10 ASO Modlari ve MAINNET Auto Position Policy
+
+Burada iki ayrı ayar var; isimler benzer olduğu için karışabiliyor.
+
+ASO indicator mode, ASO'nun bulls/bears değerlerini nasıl hesapladığını belirler. Bu paper, chart, signal ve auto kararlarının beslendiği gösterge ayarıdır:
+
+- `intrabar`: ASO'yu mum içi fiyat aralığı mantığıyla hesaplar.
+- `group`: ASO'yu grup/rolling pencere mantığıyla hesaplar.
+- `both`: intrabar ve group bilgisini beraber kullanır. Varsayılan ayar budur ve son operator-stop örneklerinde `ASO mode both` olarak geçer.
+
+Bu ayar dashboard settings panelinden değiştirilebilir. API/settings tarafındaki alan adı:
+
+```json
+{
+  "aso_mode": "both"
+}
+```
+
+MAINNET auto position policy ise ASO çıktısı geldikten sonra live auto'nun pozisyon isteğini nasıl yorumlayacağını belirler. Env ve live helper flag'i:
+
+```sh
+RELXEN_MAINNET_AUTO_POSITION_POLICY=crossover_only
+scripts/run_mainnet_auto_live_trial.sh --position-policy crossover_only
+```
+
+Desteklenen position policy modları:
+
+- `crossover_only`: konservatif default. Klasik closed-candle crossover sinyali yoksa pozisyon açmaya çalışmaz. Mevcut açık pozisyon/open order varsa yeni entry bloklanır.
+- `always_in_market`: son kapalı ASO durumunda bulls > bears ise LONG, bears > bulls ise SHORT ister. Pozisyon yoksa entry açabilir; ters yön isterse önce reduce-only close ile mevcut pozisyonu kapatır, flat reconciliation bekler, sonra karşı yöne entry dener.
+- `flat_allowed`: ASO zayıfsa flat/no-trade kalabilir. `RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD` ve `RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD` ile zayıf bölge filtrelenir. Güçlü LONG/SHORT yoksa yeni pozisyon açmayabilir; mevcut pozisyonda zayıf state için otomatik stop-loss/take-profit uydurmaz.
+
+Örnekler:
+
+```sh
+# Konservatif default
+RELXEN_MAINNET_AUTO_POSITION_POLICY=crossover_only
+
+# Sürekli piyasada kalmaya çalışan mod
+RELXEN_MAINNET_AUTO_POSITION_POLICY=always_in_market
+
+# Zayıf ASO durumunda flat kalabilen mod
+RELXEN_MAINNET_AUTO_POSITION_POLICY=flat_allowed
+RELXEN_MAINNET_AUTO_ASO_DELTA_THRESHOLD=6
+RELXEN_MAINNET_AUTO_ASO_ZONE_THRESHOLD=54
+```
+
+Canlı helper örnekleri:
+
+```sh
+scripts/run_mainnet_auto_live_trial.sh \
+  --position-policy always_in_market \
+  --confirm "START MAINNET AUTO LIVE BTCUSDT OPERATOR STOP"
+
+scripts/run_mainnet_auto_live_trial.sh \
+  --position-policy flat_allowed \
+  --aso-delta-threshold 6 \
+  --aso-zone-threshold 54 \
+  --confirm "START MAINNET AUTO LIVE BTCUSDT 60M"
+```
+
 ## 4. Ne Yapmiyor?
 
 - MAINNET auto'yu normal startup'ta kendiliğinden açmaz.
