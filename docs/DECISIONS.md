@@ -1,5 +1,11 @@
 # Decisions
 
+## 2026-04-26
+
+### Friend handoff is capability-oriented and gate-explicit
+
+The Turkish friend handoff guide should describe what the project can actually do, including MAINNET canary and MAINNET auto live command shapes, rather than hiding those surfaces behind operator prose. The guide remains documentation-only: it records the current gates, flags, payloads, confirmations, and evidence paths, but changes no runtime behavior and adds no hidden bypass. The declared next task remains verification of the shadow/market-data false-positive stop hardening with MAINNET auto idle before any further operator-stop session.
+
 ## 2026-04-25
 
 ### MAINNET auto margin type and ASO policy are explicit session policy

@@ -32,6 +32,7 @@ Mainnet Auto Live Support v1 is implemented as a gated session-scoped path. `POS
 
 ## Where To Start Reading
 
+- Friend/share handoff guide: [docs/FRIEND_HANDOFF.md](docs/FRIEND_HANDOFF.md)
 - Current release status: [docs/V1_RELEASE_STATUS.md](docs/V1_RELEASE_STATUS.md)
 - Local runbook: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Testnet soak drill: [docs/TESTNET_SOAK_RUNBOOK.md](docs/TESTNET_SOAK_RUNBOOK.md)
